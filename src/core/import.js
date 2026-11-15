@@ -2,6 +2,7 @@
 // Ne garde que les identifiants de connexion (jamais cartes, pièces d'identité, infos personnelles).
 
 import { readZip } from './zip.js';
+import { parseTotp } from './totp.js';
 
 const dec = new TextDecoder('utf-8');
 
@@ -49,6 +50,16 @@ export function detectFormat(headers) {
 }
 
 const clean = (s) => (s ?? '').trim();
+/** Clé 2FA importable ? Sinon on la garde dans les notes. */
+const validTotp = (v) => {
+  try {
+    parseTotp(v);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 const join = (...parts) => parts.filter(Boolean).join('\n');
 
 const MAPPERS = {
@@ -60,7 +71,8 @@ const MAPPERS = {
       url: clean(r.url),
       username: users[0] ?? '',
       password: r.password ?? '',
-      notes: join(clean(r.note), users.length > 1 && `Autres identifiants : ${users.slice(1).join(', ')}`, otp && `Code à usage unique (TOTP) : ${otp}`),
+      notes: join(clean(r.note), users.length > 1 && `Autres identifiants : ${users.slice(1).join(', ')}`, otp && !validTotp(otp) && `Code à usage unique (TOTP) : ${otp}`),
+      totp: otp && validTotp(otp) ? otp : '',
     };
   },
   bitwarden(r) {
@@ -71,7 +83,8 @@ const MAPPERS = {
       url: clean(r.login_uri),
       username: clean(r.login_username),
       password: r.login_password ?? '',
-      notes: join(clean(r.notes), totp && `Code à usage unique (TOTP) : ${totp}`),
+      notes: join(clean(r.notes), totp && !validTotp(totp) && `Code à usage unique (TOTP) : ${totp}`),
+      totp: totp && validTotp(totp) ? totp : '',
     };
   },
   chrome: (r) => ({ title: clean(r.name), url: clean(r.url), username: clean(r.username), password: r.password ?? '', notes: clean(r.note) }),

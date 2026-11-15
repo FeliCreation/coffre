@@ -4,6 +4,7 @@
 import * as C from './crypto.js';
 import * as S from './share.js';
 import { newRecoveryCode, normalizeRecoveryCode } from './recovery.js';
+import { parseTotp } from './totp.js';
 
 const AAD_DATA = 'coffre:data:1';
 const AAD_WRAP = 'coffre:wrap:1';
@@ -68,7 +69,14 @@ function signature(d) {
   return `${ents}|${del}|${d.headerAt ?? 0}`;
 }
 
-const summary = ({ password, notes, history, ...rest }) => ({ ...rest, hasNotes: !!notes });
+const summary = ({ password, notes, history, totp, ...rest }) => ({ ...rest, hasNotes: !!notes, hasTotp: !!totp });
+
+/** Clé 2FA : vide = aucune ; sinon doit être valide (sinon VaultError BAD_TOTP). */
+function checkTotp(v) {
+  const t = (v ?? '').trim();
+  if (t) parseTotp(t);
+  return t;
+}
 
 export class Vault {
   #key;
@@ -243,7 +251,7 @@ export class Vault {
     return e;
   }
 
-  addEntry({ title = '', url = '', username = '', password = '', notes = '', source = null } = {}) {
+  addEntry({ title = '', url = '', username = '', password = '', notes = '', totp = '', source = null } = {}) {
     if (!title.trim() && !url.trim()) throw new VaultError('EMPTY', 'Un titre ou une adresse est requis.');
     const now = Date.now();
     const entry = {
@@ -253,6 +261,7 @@ export class Vault {
       username,
       password,
       notes,
+      totp: checkTotp(totp),
       history: [],
       source,
       createdAt: now,
@@ -281,7 +290,11 @@ export class Vault {
         continue;
       }
       seen.add(k);
-      this.addEntry({ title: entry.title, url: entry.url, username: entry.username, password: entry.password, notes: entry.notes });
+      let totp = '';
+      try {
+        totp = checkTotp(entry.totp);
+      } catch {} // clé 2FA illisible : on importe quand même l'identifiant
+      this.addEntry({ title: entry.title, url: entry.url, username: entry.username, password: entry.password, notes: entry.notes, totp });
       added++;
     }
     return { added, duplicates, invalid };
@@ -289,7 +302,8 @@ export class Vault {
 
   updateEntry(id, patch) {
     const e = this.#find(id);
-    const allowed = ['title', 'url', 'username', 'password', 'notes'];
+    const allowed = ['title', 'url', 'username', 'password', 'notes', 'totp'];
+    if (patch.totp !== undefined) patch = { ...patch, totp: checkTotp(patch.totp) };
     if (patch.password !== undefined && patch.password !== e.password) {
       e.history = [{ password: e.password, changedAt: Date.now() }, ...e.history].slice(0, HISTORY_MAX);
     }

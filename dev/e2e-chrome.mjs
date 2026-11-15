@@ -197,11 +197,33 @@ try {
   const saved = await evalIn(pop, `chrome.runtime.sendMessage({ type: 'savePending', tabId: ${tabId} })`);
   check(saved?.ok === true, 'capture : mise à jour enregistrée');
 
+  // ---- 7 bis. Codes 2FA et audit de santé (service worker réel) ----
+  const SECRET = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ';
+  const t2 = await evalIn(pop, `chrome.runtime.sendMessage({ type: 'add', entry: { title: 'Avec 2FA', url: 'https://github.com', password: '123456', totp: ${JSON.stringify(SECRET)} } })`);
+  const code2 = await evalIn(pop, `chrome.runtime.sendMessage({ type: 'totp', id: ${JSON.stringify(t2.entry.id)} })`);
+  check(/^\d{6}$/.test(code2?.code ?? '') && !JSON.stringify(code2).includes(SECRET), 'code 2FA à 6 chiffres calculé, secret non renvoyé', JSON.stringify(code2));
+  const audit = await evalIn(pop, `chrome.runtime.sendMessage({ type: 'audit' })`);
+  check(audit?.audit?.weak?.some((x) => x.title === 'Avec 2FA') && !JSON.stringify(audit).includes('123456'), 'audit : mot de passe faible repéré, aucun mot de passe renvoyé');
+
+  // ---- 7 ter. Effacement du presse-papiers (document offscreen réel), ~35 s ----
+  if (!process.env.E2E_SKIP_CLIPBOARD) {
+    await cdp.send('Browser.grantPermissions', { permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'], origin: `chrome-extension://${EXT}` });
+    await cdp.send('Target.activateTarget', { targetId: popupId });
+    await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true }, pop);
+    await evalIn(pop, `navigator.clipboard.writeText('SECRET-A-EFFACER-42')`);
+    const before = await evalIn(pop, `navigator.clipboard.readText()`);
+    await evalIn(pop, `chrome.runtime.sendMessage({ type: 'clipboardCopied' })`);
+    check(before === 'SECRET-A-EFFACER-42', 'presse-papiers : secret copié');
+    await sleep(36_000);
+    const after = await evalIn(pop, `navigator.clipboard.readText()`);
+    check(!after.includes('SECRET-A-EFFACER-42'), 'presse-papiers : effacé après 30 s par le document offscreen', JSON.stringify(after));
+  }
+
   // ---- 8. Kit de récupération, export, verrouillage ----
   const kit = await evalIn(pop, `chrome.runtime.sendMessage({ type: 'createRecovery', password: ${JSON.stringify(PW)} })`);
   check(/^([A-Z2-7]{4}-){7}[A-Z2-7]{4}$/.test(kit?.code ?? ''), 'kit de récupération créé');
   const csv = await evalIn(pop, `chrome.runtime.sendMessage({ type: 'exportCsv', password: ${JSON.stringify(PW)} })`);
-  check(csv?.count === 1 && csv.csv.includes('Nouveau-Mdp-456?'), 'export CSV : contenu à jour');
+  check(csv?.count === 2 && csv.csv.includes('Nouveau-Mdp-456?'), 'export CSV : contenu à jour');
   await evalIn(pop, `chrome.runtime.sendMessage({ type: 'lock' })`);
   check((await evalIn(swSid, `chrome.storage.session.get('sessionKey').then((o) => !o.sessionKey)`)) === true, 'verrouillage : clé de session effacée');
   const rec = await evalIn(pop, `chrome.runtime.sendMessage({ type: 'recover', code: ${JSON.stringify(kit.code)}, newPassword: 'autre mot de passe 99' })`);

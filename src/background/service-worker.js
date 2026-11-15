@@ -6,6 +6,9 @@ import { Vault, VaultError, hostOf, hostMatches } from '../core/vault.js';
 import { generatePassword, estimateStrength } from '../core/generator.js';
 import { syncVault, fetchRemoteVault, checkConfig } from '../core/sync.js';
 import { toCsv, parseBackup, backupFilename, csvFilename } from '../core/export.js';
+import { totpCode } from '../core/totp.js';
+import { auditEntries } from '../core/audit.js';
+import { checkPwned } from '../core/breach.js';
 
 const KEY_VAULT = 'vault';
 const KEY_SESSION = 'sessionKey';
@@ -15,7 +18,8 @@ const ALARM_SYNC = 'sync';
 const KEY_SYNC_LAST = 'syncLast';
 const KEY_JOIN = 'joinSync'; // dépôt + jeton saisis avant le déverrouillage (mémoire seulement)
 const SYNC_EVERY_MINUTES = 5;
-const DEFAULT_SETTINGS = { autoLockMinutes: 15 };
+const ALARM_CLIP = 'clipclear';
+const DEFAULT_SETTINGS = { autoLockMinutes: 15, clipboardClearSeconds: 30 };
 
 // La clé de session reste invisible des content scripts (pages web).
 chrome.storage.session.setAccessLevel?.({ accessLevel: 'TRUSTED_CONTEXTS' });
@@ -56,6 +60,19 @@ async function readPending(tabId) {
 
 chrome.tabs.onRemoved.addListener((tabId) => clearPending(tabId));
 
+/** Vide le presse-papiers : par un document « offscreen » dans l'extension, directement dans l'application web. */
+async function clearClipboard() {
+  try {
+    if (chrome.offscreen?.createDocument) {
+      await chrome.offscreen.createDocument({ url: 'src/offscreen/clear.html', reasons: ['CLIPBOARD'], justification: 'Effacer un mot de passe copié depuis le coffre' });
+      await new Promise((r) => setTimeout(r, 1000));
+      await chrome.offscreen.closeDocument();
+    } else {
+      await navigator.clipboard?.writeText(' ');
+    }
+  } catch {}
+}
+
 async function lock() {
   cached = null;
   await chrome.storage.session.remove(KEY_SESSION);
@@ -67,6 +84,7 @@ async function lock() {
 chrome.alarms.onAlarm.addListener((a) => {
   if (a.name === ALARM_LOCK) lock();
   if (a.name === ALARM_SYNC) syncSoon();
+  if (a.name === ALARM_CLIP) clearClipboard();
 });
 
 async function stored() {
@@ -191,6 +209,27 @@ const actions = {
     await persist(v);
     return {};
   },
+  /** Code 2FA courant : le secret reste dans le service worker, seuls le code et son délai sortent. */
+  async totp({ id }) {
+    const e = (await unlockedVault()).getEntry(id);
+    if (!e.totp) throw new VaultError('NO_TOTP', "Cet identifiant n'a pas de clé 2FA.");
+    return totpCode(e.totp);
+  },
+  /** Audit local (faibles, réutilisés, anciens) : aucun mot de passe dans la réponse. */
+  async audit() {
+    const v = await unlockedVault();
+    return { audit: auditEntries(v.list().map((s) => v.getEntry(s.id))) };
+  },
+  /** Fuites connues (k-anonymat : seuls 5 caractères d'empreinte SHA-1 par mot de passe quittent l'appareil). */
+  async auditBreaches() {
+    const v = await unlockedVault();
+    const entries = v.list().map((s) => v.getEntry(s.id)).filter((e) => e.password);
+    const pwned = await checkPwned(entries.map((e) => e.password));
+    return {
+      checked: new Set(entries.map((e) => e.password)).size,
+      exposed: entries.filter((e) => pwned.has(e.password)).map((e) => ({ id: e.id, title: e.title, count: pwned.get(e.password) })),
+    };
+  },
   async generate({ options }) {
     const password = generatePassword(options);
     return { password, strength: estimateStrength(password) };
@@ -215,9 +254,24 @@ const actions = {
     return { settings: await settings() };
   },
   async setSettings({ settings: s }) {
-    const minutes = Number(s?.autoLockMinutes);
-    if (!Number.isFinite(minutes) || minutes < 0 || minutes > 240) throw new VaultError('BAD_SETTING', 'Délai invalide (0 à 240 minutes).');
-    await chrome.storage.local.set({ [KEY_SETTINGS]: { autoLockMinutes: Math.round(minutes) } });
+    const next = await settings();
+    if (s?.autoLockMinutes !== undefined) {
+      const minutes = Number(s.autoLockMinutes);
+      if (!Number.isFinite(minutes) || minutes < 0 || minutes > 240) throw new VaultError('BAD_SETTING', 'Délai invalide (0 à 240 minutes).');
+      next.autoLockMinutes = Math.round(minutes);
+    }
+    if (s?.clipboardClearSeconds !== undefined) {
+      const sec = Number(s.clipboardClearSeconds);
+      if (!Number.isFinite(sec) || sec < 0 || (sec > 0 && sec < 30) || sec > 600) throw new VaultError('BAD_SETTING', 'Délai invalide (0, ou 30 à 600 secondes).');
+      next.clipboardClearSeconds = Math.round(sec);
+    }
+    await chrome.storage.local.set({ [KEY_SETTINGS]: { autoLockMinutes: next.autoLockMinutes, clipboardClearSeconds: next.clipboardClearSeconds } });
+    return {};
+  },
+  /** La popup vient de copier un secret : programme l'effacement du presse-papiers. */
+  async clipboardCopied() {
+    const { clipboardClearSeconds: sec } = await settings();
+    if (sec > 0) await chrome.alarms.create(ALARM_CLIP, { delayInMinutes: sec / 60 });
     return {};
   },
   async pendingForTab({ tabId }) {
@@ -248,7 +302,7 @@ const actions = {
   async importEntries({ entries }) {
     if (!Array.isArray(entries) || entries.length > 5000) throw new VaultError('BAD_IMPORT', 'Import invalide (5 000 identifiants au maximum).');
     const str = (x) => (typeof x === 'string' ? x.slice(0, 20_000) : '');
-    const clean = entries.map((e) => ({ title: str(e?.title), url: str(e?.url), username: str(e?.username), password: str(e?.password), notes: str(e?.notes) }));
+    const clean = entries.map((e) => ({ title: str(e?.title), url: str(e?.url), username: str(e?.username), password: str(e?.password), notes: str(e?.notes), totp: str(e?.totp) }));
     const v = await unlockedVault();
     const res = v.importEntries(clean);
     if (res.added) await persist(v);

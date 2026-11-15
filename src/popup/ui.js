@@ -52,10 +52,12 @@ export function toast(message, isError = false) {
   toastTimer = setTimeout(() => (el.className = ''), 2200);
 }
 
-export async function copyText(value, what = 'Copié') {
+/** `secret` : le service worker efface le presse-papiers après le délai choisi (la popup, elle, se ferme). */
+export async function copyText(value, what = 'Copié', secret = false) {
   try {
     await navigator.clipboard.writeText(value);
     toast(what);
+    if (secret) chrome.runtime.sendMessage({ type: 'clipboardCopied' }).catch?.(() => {});
   } catch {
     toast('Copie impossible.', true);
   }

@@ -78,3 +78,6 @@ textarea.code{font-family:ui-monospace,Consolas,monospace;font-size:11px;word-br
 #toast.show{opacity:1;transform:translate(-50%,0)}
 #toast.err{background:var(--bad);color:#fff}
 .kitcode{font-size:15px;font-weight:600;letter-spacing:.04em;user-select:all;padding:8px 10px;background:var(--bg2);border-radius:8px}
+.issue{display:flex;justify-content:space-between;align-items:center;gap:8px;width:100%;text-align:left;border:0;border-bottom:1px solid var(--line);background:none;padding:8px 2px;color:var(--text);font:inherit;cursor:pointer}
+.issue:hover{background:var(--bg2)}
+.totp{font-size:15px;font-weight:600;letter-spacing:.06em}

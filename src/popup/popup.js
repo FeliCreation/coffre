@@ -17,6 +17,7 @@ const S = {
   shareResult: '',
   genOpts: { ...DEFAULTS },
   genPw: '',
+  health: { audit: null, breaches: null },
 };
 
 try {
@@ -111,7 +112,7 @@ function viewCreate() {
 }
 
 function viewUnlock() {
-  Object.assign(S, { view: null, entries: [], pending: null, share: null, shareResult: '', genPw: '' }); // rien ne reste en mémoire une fois verrouillé
+  Object.assign(S, { view: null, entries: [], pending: null, share: null, shareResult: '', genPw: '', health: { audit: null, breaches: null } }); // rien ne reste en mémoire une fois verrouillé
   const pw = h('input', { class: 'input', type: 'password', placeholder: 'Mot de passe maître', autocomplete: 'current-password' });
   const err = h('p', { class: 'error' });
   const submit = async () => {
@@ -191,7 +192,7 @@ function renderMain() {
     iconButton('lock', 'Verrouiller', guard(async () => { await api({ type: 'lock' }); viewUnlock(); })));
   const parts = [head];
   if (!S.view) {
-    const tabs = [['coffre', 'Coffre'], ['generateur', 'Générateur'], ['partage', 'Partage']];
+    const tabs = [['coffre', 'Coffre'], ['generateur', 'Générateur'], ['sante', 'Santé'], ['partage', 'Partage']];
     parts.push(h('nav', { class: 'tabs' }, tabs.map(([id, label]) =>
       h('button', { class: `tab${S.tab === id ? ' on' : ''}`, onclick: () => { S.tab = id; renderMain(); } }, label))));
   }
@@ -203,6 +204,7 @@ function renderMain() {
   else if (S.view?.name === 'settings') viewSettings(body);
   else if (S.tab === 'coffre') tabCoffre(body);
   else if (S.tab === 'generateur') tabGenerateur(body);
+  else if (S.tab === 'sante') tabSante(body);
   else tabPartage(body);
 }
 
@@ -249,7 +251,7 @@ function entryRow(e, { fillBtn = false, first = false } = {}) {
       ? h('button', { class: 'btn small', onclick: guard(() => fillEntry(e.id)) }, 'Remplir')
       : [siteUrl(e.url) ? iconButton('external', 'Ouvrir le site', () => openSite(e.url)) : null,
          iconButton('user', "Copier l'identifiant", () => copyText(e.username, 'Identifiant copié')),
-         iconButton('key', 'Copier le mot de passe', guard(async () => copyText((await api({ type: 'reveal', id: e.id })).entry.password, 'Mot de passe copié')))]);
+         iconButton('key', 'Copier le mot de passe', guard(async () => copyText((await api({ type: 'reveal', id: e.id })).entry.password, 'Mot de passe copié', true)))]);
 }
 
 function renderList(list) {
@@ -308,6 +310,7 @@ function viewDetail(body) {
     }
     await api({ type: 'remove', id: e.id });
     S.entries = (await api({ type: 'list', query: '' })).entries;
+    S.health = { audit: null, breaches: null };
     S.view = null;
     toast('Identifiant supprimé');
     renderMain();
@@ -316,8 +319,9 @@ function viewDetail(body) {
     kv('Identifiant', e.username || '—', e.username ? iconButton('copy', 'Copier', () => copyText(e.username, 'Identifiant copié')) : null),
     kv('Mot de passe', h('span', { class: 'mono' }, showPw ? e.password : '••••••••••••'),
       iconButton(showPw ? 'eyeOff' : 'eye', showPw ? 'Masquer' : 'Afficher', () => { S.view.showPw = !showPw; renderMain(); }),
-      iconButton('copy', 'Copier', () => copyText(e.password, 'Mot de passe copié'))),
+      iconButton('copy', 'Copier', () => copyText(e.password, 'Mot de passe copié', true))),
     kv('Adresse', e.url || '—', siteUrl(e.url) ? iconButton('external', 'Ouvrir le site', () => openSite(e.url)) : null),
+    e.totp ? totpRow(e.id, kv) : null,
     e.notes ? kv('Notes', e.notes) : null,
     e.history?.length ? kv('Historique', `${e.history.length} ancien${e.history.length > 1 ? 's' : ''} mot${e.history.length > 1 ? 's' : ''} de passe`) : null,
     e.source ? kv('Partagé par', h('span', { class: 'mono' }, e.source.sharedBy.slice(0, 32).toUpperCase().match(/.{4}/g).join(' '))) : null,
@@ -337,6 +341,7 @@ function viewForm(body) {
     username: h('input', { class: 'input', value: prefill.username || '', autocomplete: 'off', autocapitalize: 'off' }),
     password: h('input', { class: 'input', type: 'password', value: prefill.password || '', autocomplete: 'off' }),
     notes: h('textarea', { value: prefill.notes || '' }),
+    totp: h('input', { class: 'input mono', value: prefill.totp || '', placeholder: 'Clé ou lien otpauth:// (facultatif)', autocomplete: 'off', autocapitalize: 'off', spellcheck: false }),
   };
   const meter = strengthMeter();
   meter.update(f.password.value);
@@ -352,6 +357,7 @@ function viewForm(body) {
         iconButton('eye', 'Afficher ou masquer', () => { f.password.type = f.password.type === 'password' ? 'text' : 'password'; }),
         iconButton('refresh', 'Générer', () => { f.password.value = generatePassword(S.genOpts); f.password.type = 'text'; meter.update(f.password.value); })),
       meter),
+    field('Clé 2FA (codes à usage unique)', f.totp),
     field('Notes', f.notes),
     err,
     h('button', { class: 'btn primary block', onclick: guard(async () => {
@@ -364,11 +370,98 @@ function viewForm(body) {
         return void (err.textContent = e.message);
       }
       S.entries = (await api({ type: 'list', query: '' })).entries;
+      S.health = { audit: null, breaches: null };
       S.view = null;
       toast(id ? 'Modifications enregistrées' : 'Identifiant ajouté');
       renderMain();
     }) }, 'Enregistrer'));
   (prefill.title ? f.username : f.title).focus();
+}
+
+// ---------- Codes 2FA ----------
+
+/** Ligne « Code 2FA » : le code se renouvelle seul ; le secret ne quitte jamais le service worker. */
+function totpRow(id, kv) {
+  const code = h('span', { class: 'mono totp' }, '••• •••');
+  const left = h('span', { class: 'sub' });
+  let remaining = 0;
+  let timer;
+  const refresh = async () => {
+    try {
+      const r = await api({ type: 'totp', id });
+      code.dataset.raw = r.code;
+      code.textContent = r.code.replace(/^(\d{3})(\d+)$/, '$1 $2');
+      remaining = r.remaining;
+      left.textContent = ` ${remaining} s`;
+    } catch (e) {
+      clearInterval(timer);
+      code.textContent = '—';
+      left.textContent = ` ${e.message}`;
+    }
+  };
+  timer = setInterval(() => {
+    if (!code.isConnected) return clearInterval(timer); // vue quittée
+    remaining -= 1;
+    left.textContent = ` ${Math.max(remaining, 0)} s`;
+    if (remaining <= 0) refresh();
+  }, 1000);
+  refresh();
+  return kv('Code 2FA', h('span', {}, code, left),
+    iconButton('copy', 'Copier le code', () => (code.dataset.raw ? copyText(code.dataset.raw, 'Code copié', true) : null)));
+}
+
+// ---------- Onglet Santé ----------
+
+const plural = (n, one, many) => `${n} ${n > 1 ? many : one}`;
+
+async function tabSante(body) {
+  if (!S.health.audit) {
+    body.append(h('p', { class: 'sub' }, 'Analyse du coffre…'));
+    try {
+      S.health.audit = (await api({ type: 'audit' })).audit;
+    } catch (e) {
+      if (e.code === 'LOCKED') return viewUnlock();
+      return body.replaceChildren(h('p', { class: 'error' }, e.message));
+    }
+    if (!body.isConnected) return;
+  }
+  const a = S.health.audit;
+  const row = (id, title, detail) => h('button', { class: 'issue', type: 'button', onclick: guard(() => openDetail(id)) },
+    h('span', {}, title || '(sans titre)'), detail ? h('span', { class: 'sub' }, detail) : null);
+  const section = (label, rows) => (rows.length ? [h('h2', {}, label), ...rows] : []);
+  const fill = h('div', { class: 'meter-fill', 'data-score': a.score >= 80 ? 4 : a.score >= 50 ? 3 : a.score >= 25 ? 2 : 1 });
+  fill.style.width = `${a.score}%`;
+  const meter = h('div', { class: 'meter' }, h('div', { class: 'meter-track' }, fill));
+
+  const br = S.health.breaches;
+  const err = h('p', { class: 'error' });
+  const check = h('button', { class: 'btn block', onclick: async () => {
+    err.textContent = '';
+    check.disabled = true;
+    check.textContent = 'Vérification…';
+    try {
+      S.health.breaches = await api({ type: 'auditBreaches' });
+    } catch (e) {
+      err.textContent = e.message;
+    }
+    renderMain();
+  } }, br ? 'Revérifier les fuites' : 'Vérifier les fuites connues');
+
+  body.replaceChildren(...[
+    h('h1', {}, `Santé du coffre : ${a.score} %`),
+    meter,
+    h('p', { class: 'sub' }, a.total ? `${plural(a.total, 'mot de passe analysé', 'mots de passe analysés')}.` : 'Aucun mot de passe à analyser.'),
+    ...section(`Faibles (${a.weak.length})`, a.weak.map((x) => row(x.id, x.title, x.detail))),
+    ...section(`Réutilisés (${plural(a.reused.length, 'groupe', 'groupes')})`, a.reused.flatMap((g) => g.entries.map((x) => row(x.id, x.title, `partagé par ${g.count}`)))),
+    ...section(`Anciens, plus d'un an (${a.old.length})`, a.old.map((x) => row(x.id, x.title, x.detail))),
+    br?.exposed.length ? h('h2', {}, `Exposés dans des fuites (${br.exposed.length})`) : null,
+    ...(br ? br.exposed.map((x) => row(x.id, x.title, `vu ${x.count.toLocaleString('fr-FR')} fois`)) : []),
+    br && !br.exposed.length ? h('p', { class: 'sub' }, `Aucun des ${br.checked} mots de passe n'apparaît dans les fuites connues.`) : null,
+    h('h2', {}, 'Fuites connues'),
+    h('p', { class: 'sub' }, "Compare vos mots de passe à ceux publiés dans des fuites (Have I Been Pwned). Seuls les 5 premiers caractères d'une empreinte de chaque mot de passe sont envoyés : jamais le mot de passe lui-même."),
+    err, check,
+    h('button', { class: 'btn block', onclick: () => { S.health = { audit: null, breaches: null }; renderMain(); } }, icon('refresh'), " Actualiser l'analyse"),
+  ].filter(Boolean));
 }
 
 // ---------- Onglet Générateur ----------
@@ -394,7 +487,7 @@ function tabGenerateur(body) {
     regen();
   } }), label);
   body.append(
-    h('div', { class: 'pw' }, out, iconButton('refresh', 'Regénérer', regen), iconButton('copy', 'Copier', () => copyText(S.genPw, 'Mot de passe copié'))),
+    h('div', { class: 'pw' }, out, iconButton('refresh', 'Regénérer', regen), iconButton('copy', 'Copier', () => copyText(S.genPw, 'Mot de passe copié', true))),
     meter,
     h('div', { class: 'range' }, h('span', { class: 'sub' }, 'Longueur'),
       h('input', { type: 'range', min: 8, max: 64, step: 1, value: o.length, oninput: (e) => { o.length = Number(e.target.value); lenOut.textContent = o.length; regen(); } }), lenOut),
@@ -611,12 +704,16 @@ async function viewSettings(body) {
   const lockSel = h('select', {}, [[5, '5 minutes'], [15, '15 minutes'], [30, '30 minutes'], [60, '1 heure'], [0, 'Jamais']].map(([v, l]) =>
     h('option', { value: v, selected: v === settings.autoLockMinutes }, l)));
   lockSel.addEventListener('change', guard(async () => { await api({ type: 'setSettings', settings: { autoLockMinutes: Number(lockSel.value) } }); toast('Réglage enregistré'); }));
+  const clipSel = h('select', {}, [[30, '30 secondes'], [60, '1 minute'], [120, '2 minutes'], [0, 'Jamais']].map(([v, l]) =>
+    h('option', { value: v, selected: v === settings.clipboardClearSeconds }, l)));
+  clipSel.addEventListener('change', guard(async () => { await api({ type: 'setSettings', settings: { clipboardClearSeconds: Number(clipSel.value) } }); toast('Réglage enregistré'); }));
   const cur = h('input', { class: 'input', type: 'password', placeholder: 'Mot de passe maître actuel', autocomplete: 'current-password' });
   const next = h('input', { class: 'input', type: 'password', placeholder: 'Nouveau mot de passe maître', autocomplete: 'new-password' });
   const next2 = h('input', { class: 'input', type: 'password', placeholder: 'Confirmer le nouveau mot de passe', autocomplete: 'new-password' });
   const err = h('p', { class: 'error' });
   body.append(...[
     h('div', { class: 'field' }, h('label', {}, 'Verrouillage automatique après'), lockSel),
+    h('div', { class: 'field' }, h('label', {}, 'Effacer le presse-papiers après la copie d\'un mot de passe'), clipSel),
     h('h2', {}, 'Synchronisation'),
     await syncSection(),
     h('h2', {}, 'Sauvegarde et récupération'),
