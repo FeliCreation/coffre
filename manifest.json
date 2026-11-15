@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Coffre",
+  "version": "0.3.0",
+  "description": "Gestionnaire de mots de passe : coffre chiffré localement, générateur, remplissage automatique, partage sécurisé.",
+  "minimum_chrome_version": "110",
+  "permissions": ["storage", "alarms", "activeTab", "clipboardWrite"],
+  "host_permissions": ["https://api.github.com/*"],
+  "icons": { "16": "icons/icon-16.png", "32": "icons/icon-32.png", "48": "icons/icon-48.png", "128": "icons/icon-128.png" },
+  "action": {
+    "default_title": "Coffre",
+    "default_popup": "src/popup/popup.html",
+    "default_icon": { "16": "icons/icon-16.png", "32": "icons/icon-32.png" }
+  },
+  "background": {
+    "service_worker": "src/background/service-worker.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"],
+      "js": ["src/content/content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  }
+}

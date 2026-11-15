@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <title>Harnais script de contenu</title>
+  <style>body{font:14px system-ui;padding:40px;max-width:420px} input{display:block;width:100%;margin:10px 0;padding:8px;box-sizing:border-box} button{padding:8px 14px}</style>
+</head>
+<body>
+  <h2>Se connecter</h2>
+  <form id="login" action="javascript:void(0)">
+    <input id="user" type="email" placeholder="Identifiant">
+    <input id="pass" type="password" placeholder="Mot de passe">
+    <button id="go" type="submit">Se connecter</button>
+  </form>
+  <h2>Créer un compte</h2>
+  <form id="signup" action="javascript:void(0)">
+    <input id="newuser" type="email" placeholder="E-mail">
+    <input id="newpass" type="password" autocomplete="new-password" placeholder="Nouveau mot de passe">
+  </form>
+  <script type="module">
+    import { installChrome } from './chrome-mock.js';
+    const m = installChrome();
+    window.__mock = m;
+    await import('../src/background/service-worker.js');
+    const popup = chrome.runtime.sendMessage; // canal « popup » conservé
+    window.__popup = popup;
+    await popup({ type: 'create', password: 'correct horse battery' });
+    await popup({ type: 'add', entry: { title: 'Exemple', url: 'exemple.fr', username: 'cyril@exemple.fr', password: 'S3cret-xyz' } });
+    // Le script de contenu parle au service worker comme s'il tournait sur https://exemple.fr/login
+    chrome.runtime.sendMessage = (msg) => m.fromContent(msg, { url: window.__fakeUrl || 'https://exemple.fr/login', tabId: 3 });
+    window.__events = [];
+    for (const id of ['user', 'pass']) for (const t of ['input', 'change']) document.getElementById(id).addEventListener(t, () => window.__events.push(`${id}:${t}`));
+    const s = document.createElement('script');
+    s.src = '../src/content/content.js';
+    s.onload = () => (window.__ready = true);
+    document.head.append(s);
+  </script>
+</body>
+</html>

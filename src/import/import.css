@@ -1,0 +1,14 @@
+body{width:auto;max-width:620px;max-height:none;overflow:visible;margin:0 auto;padding:32px 20px 60px}
+h1{font-size:20px;margin:0 0 6px}
+.drop{display:block;border:2px dashed var(--line);border-radius:12px;padding:40px 20px;text-align:center;cursor:pointer;color:var(--text2);margin:16px 0}
+.drop:hover,.drop.over{border-color:var(--accent);background:var(--accent-bg);color:var(--text)}
+.drop input{display:none}
+.steps{padding-left:18px;margin:8px 0 0;color:var(--text2)}
+table{width:100%;border-collapse:collapse;font-size:12px;margin:8px 0 12px;table-layout:fixed}
+th,td{text-align:left;padding:5px 6px;border-top:1px solid var(--line);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+th{color:var(--text3);font-weight:500;border-top:0}
+.note{background:var(--bg2);border-radius:8px;padding:10px 12px;margin:12px 0}
+.warn{background:var(--bad-bg);border-radius:8px;padding:10px 12px;margin-top:16px}
+.stats{display:flex;gap:10px;margin:12px 0}
+.stat{flex:1;background:var(--bg2);border-radius:8px;padding:10px;text-align:center}
+.stat b{display:block;font-size:20px;font-weight:600}

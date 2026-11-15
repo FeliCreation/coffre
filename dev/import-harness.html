@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <title>Harnais page d'import (faux chrome)</title>
+  <link rel="stylesheet" href="../src/popup/popup.css">
+  <link rel="stylesheet" href="../src/import/import.css">
+</head>
+<body>
+  <main id="app"></main>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script type="module">
+    import { installChrome } from './chrome-mock.js';
+    const m = installChrome();
+    window.__mock = m;
+    await import('../src/background/service-worker.js');
+    window.__call = chrome.runtime.sendMessage;
+    if (!new URLSearchParams(location.search).has('nocoffre')) await window.__call({ type: 'create', password: 'correct horse battery' });
+    await import('../src/import/import.js');
+  </script>
+</body>
+</html>

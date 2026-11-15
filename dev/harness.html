@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <title>Harnais popup (faux chrome)</title>
+  <link rel="stylesheet" href="../src/popup/popup.css">
+</head>
+<body>
+  <div id="app"></div>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script type="module">
+    // Exécute le vrai service worker et la vraie popup dans une page, avec un faux `chrome`.
+    import { installChrome } from './chrome-mock.js';
+    const m = installChrome();
+    window.__mock = m;
+    const site = new URLSearchParams(location.search).get('url') || 'https://exemple.fr/login';
+    window.close = () => (window.__closed = true); // la vraie popup se ferme après un remplissage
+    chrome.tabs.create = async (o) => (window.__opened ??= []).push(o.url);
+    chrome.tabs.query = async () => [{ id: 1, url: site }];
+    chrome.tabs.sendMessage = async (id, msg) => ((window.__fills ??= []).push(msg), { filled: true });
+    await import('../src/background/service-worker.js');
+    await import('../src/popup/popup.js');
+  </script>
+</body>
+</html>

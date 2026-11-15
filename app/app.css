@@ -1,0 +1,12 @@
+/* Adaptation de la popup (360 px) à un écran de téléphone ou d'ordinateur. */
+body{width:auto;max-width:520px;min-height:100vh;max-height:none;margin:0 auto;font-size:16px;
+  padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+h1{font-size:20px}
+.sub,.error{font-size:14px}
+.input,select,textarea{padding:11px 12px;font-size:16px} /* 16 px : iOS ne zoome pas sur le champ */
+.btn{min-height:44px}
+.btn.icon{min-width:44px}
+.tab{padding:14px 0;font-size:14px}
+header{padding:12px 14px}
+header .title{font-size:17px}
+.center{padding:48px 22px}

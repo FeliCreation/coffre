@@ -1,0 +1,41 @@
+# Publie l'application web (téléphone) sur GitHub Pages. Gratuit ; aucun secret : le dépôt ne contient que du code.
+name: Publier l'application web
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm test
+      - name: Assembler le site (uniquement ce que l'application charge)
+        run: |
+          mkdir -p _site/src
+          cp -r app icons _site/
+          cp -r src/core src/popup src/background _site/src/
+          echo '<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=app/"><a href="app/">Coffre</a>' > _site/index.html
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4
