@@ -230,6 +230,14 @@ const actions = {
       exposed: entries.filter((e) => pwned.has(e.password)).map((e) => ({ id: e.id, title: e.title, count: pwned.get(e.password) })),
     };
   },
+  /** Renomme un dossier ; `to` vide = supprime le dossier (les identifiants restent, sans dossier). */
+  async renameFolder({ from, to }) {
+    if (typeof from !== 'string' || (to != null && typeof to !== 'string')) throw new VaultError('BAD_FOLDER', 'Dossier invalide.');
+    const v = await unlockedVault();
+    const count = v.renameFolder(from, to ?? '');
+    if (count) await persist(v);
+    return { count };
+  },
   async generate({ options }) {
     const password = generatePassword(options);
     return { password, strength: estimateStrength(password) };
@@ -302,7 +310,7 @@ const actions = {
   async importEntries({ entries }) {
     if (!Array.isArray(entries) || entries.length > 5000) throw new VaultError('BAD_IMPORT', 'Import invalide (5 000 identifiants au maximum).');
     const str = (x) => (typeof x === 'string' ? x.slice(0, 20_000) : '');
-    const clean = entries.map((e) => ({ title: str(e?.title), url: str(e?.url), username: str(e?.username), password: str(e?.password), notes: str(e?.notes), totp: str(e?.totp) }));
+    const clean = entries.map((e) => ({ title: str(e?.title), url: str(e?.url), username: str(e?.username), password: str(e?.password), notes: str(e?.notes), totp: str(e?.totp), folder: str(e?.folder) }));
     const v = await unlockedVault();
     const res = v.importEntries(clean);
     if (res.added) await persist(v);

@@ -1,6 +1,7 @@
 import { h, icon, iconButton, toast, copyText, api, initials, download } from './ui.js';
 import { hostOf, hostMatches, siteUrl } from '../core/vault.js';
-import { generatePassword, estimateStrength, DEFAULTS } from '../core/generator.js';
+import { VERSION } from '../core/version.js';
+import { generatePassword, estimateStrength, strengthFromBits, generatePassphrase, passphraseBits, DEFAULTS, PASSPHRASE_DEFAULTS } from '../core/generator.js';
 
 const app = document.getElementById('app');
 const S = {
@@ -18,12 +19,17 @@ const S = {
   genOpts: { ...DEFAULTS },
   genPw: '',
   health: { audit: null, breaches: null },
+  folder: null, // filtre de dossier : null = tous, '' = sans dossier, sinon le nom
   sync: null, // état de la synchro (null : coffre verrouillé ou synchro non configurée)
   syncing: false,
 };
 
+S.genMode = 'password'; // 'password' | 'phrase'
+S.genPhrase = { ...PASSPHRASE_DEFAULTS };
 try {
   Object.assign(S.genOpts, JSON.parse(localStorage.getItem('genOpts') || '{}'));
+  Object.assign(S.genPhrase, JSON.parse(localStorage.getItem('genPhrase') || '{}'));
+  if (localStorage.getItem('genMode') === 'phrase') S.genMode = 'phrase';
 } catch {}
 
 const mount = (...nodes) => app.replaceChildren(...nodes.filter(Boolean));
@@ -120,8 +126,8 @@ function strengthMeter() {
   const fill = h('div', { class: 'meter-fill' });
   const label = h('span', { class: 'sub' });
   const el = h('div', { class: 'meter' }, h('div', { class: 'meter-track' }, fill), label);
-  el.update = (pw) => {
-    const s = estimateStrength(pw);
+  el.update = (pw, bits) => {
+    const s = bits != null ? strengthFromBits(bits) : estimateStrength(pw); // phrase de passe : entropie réelle connue
     fill.style.width = `${s.score * 25}%`;
     fill.dataset.score = s.score;
     label.textContent = pw ? `${s.label} · ${s.bits} bits` : '';
@@ -162,7 +168,7 @@ function viewCreate() {
 }
 
 function viewUnlock() {
-  Object.assign(S, { view: null, entries: [], pending: null, share: null, shareResult: '', genPw: '', health: { audit: null, breaches: null }, sync: null, syncing: false }); // rien ne reste en mémoire une fois verrouillé
+  Object.assign(S, { view: null, entries: [], pending: null, share: null, shareResult: '', genPw: '', health: { audit: null, breaches: null }, folder: null, sync: null, syncing: false }); // rien ne reste en mémoire une fois verrouillé
   const pw = h('input', { class: 'input', type: 'password', placeholder: 'Mot de passe maître', autocomplete: 'current-password' });
   const err = h('p', { class: 'error' });
   const submit = async () => {
@@ -278,12 +284,68 @@ const forSite = () => (S.host ? S.entries.filter((e) => hostMatches(hostOf(e.url
 function tabCoffre(body) {
   if (S.pending) body.append(pendingBanner());
   const list = h('div');
+  const chips = h('div', { class: 'chips' });
   const search = h('input', { class: 'input', type: 'search', placeholder: 'Rechercher un identifiant', value: S.query });
   search.addEventListener('input', () => { S.query = search.value; renderList(list); });
-  body.append(search, list,
-    h('button', { class: 'btn block', onclick: () => { S.view = { name: 'form', prefill: { url: S.host, title: S.host } }; renderMain(); } },
+  body.append(search, chips, list,
+    h('button', { class: 'btn block', onclick: () => { S.view = { name: 'form', prefill: { url: S.host, title: S.host, folder: S.folder || '' } }; renderMain(); } },
       icon('plus'), ' Ajouter un identifiant'));
+  renderChips(chips, list);
   renderList(list);
+}
+
+// ---------- Dossiers ----------
+
+const folderNames = () => [...new Set(S.entries.map((e) => e.folder).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'fr'));
+
+/** Puces de filtre : Tous · dossiers · Sans dossier. Invisibles tant qu'aucun dossier n'existe. */
+function renderChips(box, list) {
+  const names = folderNames();
+  const hasNone = S.entries.some((e) => !e.folder);
+  if (S.folder && !names.includes(S.folder)) S.folder = null; // dossier renommé ou supprimé
+  if (S.folder === '' && !hasNone) S.folder = null;
+  if (!names.length) return box.replaceChildren();
+  const chip = (label, value) => h('button', { class: `chip${S.folder === value ? ' on' : ''}`, type: 'button',
+    onclick: () => { S.folder = value; renderChips(box, list); renderList(list); } }, label);
+  box.replaceChildren(...[
+    chip('Tous', null),
+    ...names.map((n) => chip(`${n} · ${S.entries.filter((e) => e.folder === n).length}`, n)),
+    hasNone ? chip('Sans dossier', '') : null,
+  ].filter(Boolean));
+}
+
+async function reloadEntries() {
+  S.entries = (await api({ type: 'list', query: '' })).entries;
+  S.health = { audit: null, breaches: null };
+}
+
+function foldersSection() {
+  const names = folderNames();
+  if (!names.length) return h('p', { class: 'sub' }, 'Aucun dossier. Indiquez un « Dossier » en créant ou en modifiant un identifiant.');
+  return h('div', {}, ...names.map((name) => {
+    const count = S.entries.filter((e) => e.folder === name).length;
+    const input = h('input', { class: 'input', value: name, maxlength: 60 });
+    const rename = h('button', { class: 'btn small', onclick: guard(async () => {
+      const to = input.value.trim();
+      if (!to || to === name) return;
+      await api({ type: 'renameFolder', from: name, to });
+      await reloadEntries();
+      toast('Dossier renommé');
+      renderMain();
+    }) }, 'Renommer');
+    const del = h('button', { class: 'btn small danger', onclick: guard(async () => {
+      if (del.dataset.sure !== '1') {
+        del.dataset.sure = '1';
+        del.textContent = 'Confirmer (les identifiants restent)';
+        return;
+      }
+      await api({ type: 'renameFolder', from: name, to: '' });
+      await reloadEntries();
+      toast('Dossier supprimé');
+      renderMain();
+    }) }, 'Supprimer le dossier');
+    return h('div', { class: 'field' }, h('label', {}, `${count} identifiant${count > 1 ? 's' : ''}`), h('div', { class: 'inline' }, input, rename), del);
+  }));
 }
 
 function pendingBanner() {
@@ -333,9 +395,12 @@ function renderList(list) {
   if (!S.entries.length) {
     nodes.push(h('div', { class: 'empty' }, h('p', {}, 'Votre coffre est vide.'), h('p', { class: 'sub' }, 'Ajoutez un premier identifiant, ou connectez-vous à un site : Coffre proposera de l’enregistrer.')));
   } else if (q) {
-    const found = S.entries.filter((e) => [e.title, e.url, e.username].some((f) => f.toLowerCase().includes(q)));
+    const found = S.entries.filter((e) => [e.title, e.url, e.username, e.folder || ''].some((f) => f.toLowerCase().includes(q)));
     found.sort((a, b) => Number(!!b.favorite) - Number(!!a.favorite)); // favoris d'abord (tri stable : l'ordre alphabétique reste)
     nodes.push(h('h2', {}, `Résultats (${found.length})`), ...found.map((e, i) => entryRow(e, { first: i === 0 })));
+  } else if (S.folder !== null) {
+    const inside = S.entries.filter((e) => (e.folder || '') === S.folder).sort((a, b) => Number(!!b.favorite) - Number(!!a.favorite));
+    nodes.push(h('h2', {}, S.folder === '' ? 'Sans dossier' : S.folder), ...inside.map((e, i) => entryRow(e, { first: i === 0 })));
   } else {
     const here = forSite();
     const ids = new Set(here.map((e) => e.id));
@@ -398,6 +463,7 @@ function viewDetail(body) {
       iconButton(showPw ? 'eyeOff' : 'eye', showPw ? 'Masquer' : 'Afficher', () => { S.view.showPw = !showPw; renderMain(); }),
       iconButton('copy', 'Copier', () => copyText(e.password, 'Mot de passe copié', true))),
     kv('Adresse', e.url || '—', siteUrl(e.url) ? iconButton('external', 'Ouvrir le site', () => openSite(e.url)) : null),
+    e.folder ? kv('Dossier', e.folder) : null,
     e.totp ? totpRow(e.id, kv) : null,
     e.notes ? kv('Notes', e.notes) : null,
     e.updatedAt ? kv('Modifié', new Date(e.updatedAt).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' })) : null,
@@ -426,8 +492,10 @@ function viewForm(body) {
     username: h('input', { class: 'input', value: prefill.username || '', autocomplete: 'off', autocapitalize: 'off' }),
     password: h('input', { class: 'input', type: 'password', value: prefill.password || '', autocomplete: 'off' }),
     notes: h('textarea', { value: prefill.notes || '' }),
+    folder: h('input', { class: 'input', value: prefill.folder || '', placeholder: 'Aucun', autocomplete: 'off', maxlength: 60 }),
     totp: h('input', { class: 'input mono', value: prefill.totp || '', placeholder: 'Clé ou lien otpauth:// (facultatif)', autocomplete: 'off', autocapitalize: 'off', spellcheck: false }),
   };
+  f.folder.setAttribute('list', 'folder-list'); // `list` est en lecture seule côté DOM : on passe par l'attribut
   const meter = strengthMeter();
   meter.update(f.password.value);
   f.password.addEventListener('input', () => meter.update(f.password.value));
@@ -442,6 +510,7 @@ function viewForm(body) {
         iconButton('eye', 'Afficher ou masquer', () => { f.password.type = f.password.type === 'password' ? 'text' : 'password'; }),
         iconButton('refresh', 'Générer', () => { f.password.value = generatePassword(S.genOpts); f.password.type = 'text'; meter.update(f.password.value); })),
       meter),
+    field('Dossier', f.folder, h('datalist', { id: 'folder-list' }, ...folderNames().map((n) => h('option', { value: n })))),
     field('Clé 2FA (codes à usage unique)', f.totp),
     field('Notes', f.notes),
     err,
@@ -551,7 +620,48 @@ async function tabSante(body) {
 
 // ---------- Onglet Générateur ----------
 
+function genModeChips() {
+  const chip = (label, mode) => h('button', { class: `chip${S.genMode === mode ? ' on' : ''}`, type: 'button', onclick: () => {
+    S.genMode = mode;
+    try { localStorage.setItem('genMode', mode); } catch {}
+    renderMain();
+  } }, label);
+  return h('div', { class: 'chips' }, chip('Mot de passe', 'password'), chip('Phrase de passe', 'phrase'));
+}
+
+function tabPhrase(body) {
+  const o = S.genPhrase;
+  const out = h('span', { class: 'mono' });
+  const meter = strengthMeter();
+  const wordsOut = h('span', {}, String(o.words));
+  const regen = () => {
+    try {
+      S.genPw = generatePassphrase(o);
+      out.textContent = S.genPw;
+      meter.update(S.genPw, passphraseBits(o));
+    } catch (e) {
+      toast(e.message, true);
+    }
+    try { localStorage.setItem('genPhrase', JSON.stringify(o)); } catch {}
+  };
+  const sep = h('select', {}, [['-', 'Tiret  -'], [' ', 'Espace'], ['.', 'Point  .'], ['_', 'Souligné  _'], ['', 'Aucun']].map(([v, l]) => h('option', { value: v, selected: v === o.separator }, l)));
+  sep.addEventListener('change', () => { o.separator = sep.value; regen(); });
+  const check = (key, label) => h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: !!o[key], onchange: (e) => { o[key] = e.target.checked; regen(); } }), label);
+  body.append(
+    genModeChips(),
+    h('div', { class: 'pw' }, out, iconButton('refresh', 'Regénérer', regen), iconButton('copy', 'Copier', () => copyText(S.genPw, 'Phrase copiée', true))),
+    meter,
+    h('div', { class: 'range' }, h('span', { class: 'sub' }, 'Mots'),
+      h('input', { type: 'range', min: 4, max: 12, step: 1, value: o.words, oninput: (e) => { o.words = Number(e.target.value); wordsOut.textContent = o.words; regen(); } }), wordsOut),
+    h('div', { class: 'field' }, h('label', {}, 'Séparateur'), sep),
+    check('capitalize', 'Majuscule à chaque mot'), check('number', 'Ajouter un chiffre'),
+    h('p', { class: 'sub' }, 'Mots français tirés au hasard : plus facile à retenir et à saisir sur téléphone. Comptez au moins 7 mots.'),
+    h('button', { class: 'btn primary block', onclick: () => { S.view = { name: 'form', prefill: { url: S.host, title: S.host, password: S.genPw } }; S.tab = 'coffre'; renderMain(); } }, 'Utiliser cette phrase'));
+  regen();
+}
+
 function tabGenerateur(body) {
+  if (S.genMode === 'phrase') return tabPhrase(body);
   const o = S.genOpts;
   const out = h('span', { class: 'mono' });
   const meter = strengthMeter();
@@ -572,6 +682,7 @@ function tabGenerateur(body) {
     regen();
   } }), label);
   body.append(
+    genModeChips(),
     h('div', { class: 'pw' }, out, iconButton('refresh', 'Regénérer', regen), iconButton('copy', 'Copier', () => copyText(S.genPw, 'Mot de passe copié', true))),
     meter,
     h('div', { class: 'range' }, h('span', { class: 'sub' }, 'Longueur'),
@@ -805,6 +916,8 @@ async function viewSettings(body) {
     h('div', { class: 'field' }, h('label', {}, 'Effacer le presse-papiers après la copie d\'un mot de passe'), clipSel),
     h('h2', {}, 'Synchronisation'),
     await syncSection(),
+    h('h2', {}, 'Dossiers'),
+    foldersSection(),
     h('h2', {}, 'Sauvegarde et récupération'),
     await backupSection(),
     window.COFFRE_APP ? null : h('h2', {}, 'Importer'),
@@ -821,7 +934,8 @@ async function viewSettings(body) {
       } catch (e) {
         err.textContent = e.code === 'WRONG_PASSWORD' ? 'Le mot de passe actuel est incorrect.' : e.message;
       }
-    } }, 'Modifier')].filter(Boolean));
+    } }, 'Modifier'),
+    h('p', { class: 'sub', style: 'margin-top:18px' }, `Coffre ${VERSION}`)].filter(Boolean));
 }
 
 init().catch((e) => mount(h('div', { class: 'center' }, h('h1', {}, 'Coffre indisponible'), h('p', { class: 'error' }, e.message))));

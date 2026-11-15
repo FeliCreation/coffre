@@ -1,4 +1,6 @@
-// Générateur de mots de passe. Aléa cryptographique + tirage sans biais (rejection sampling).
+// Générateur de mots de passe et de phrases de passe. Aléa cryptographique + tirage sans biais (rejection sampling).
+
+import { WORDS } from './wordlist.js';
 
 const SETS = {
   lower: 'abcdefghijklmnopqrstuvwxyz',
@@ -73,6 +75,39 @@ export function estimateStrength(password) {
   if (/(password|motdepasse|azerty|qwerty|admin|123456)/i.test(password)) bits = Math.min(bits, 20);
   bits = Math.max(0, Math.round(bits));
 
+  return strengthFromBits(bits);
+}
+
+/** Niveau (1 à 4) et libellé d'une entropie en bits. */
+export function strengthFromBits(bits) {
   const [score, label] = bits < 40 ? [1, 'faible'] : bits < 60 ? [2, 'moyen'] : bits < 80 ? [3, 'bon'] : [4, 'excellent'];
   return { bits, label, score };
+}
+
+export const PASSPHRASE_DEFAULTS = Object.freeze({ words: 7, separator: '-', capitalize: false, number: false });
+
+function checkPassphrase(options) {
+  const o = { ...PASSPHRASE_DEFAULTS, ...options };
+  if (!Number.isInteger(o.words) || o.words < 3 || o.words > 20) throw new RangeError('Nombre de mots : 3 à 20.');
+  if (typeof o.separator !== 'string' || o.separator.length > 3) throw new RangeError('Séparateur : 3 caractères au plus.');
+  return o;
+}
+
+/** Entropie RÉELLE (bits) d'une phrase tirée avec ces options : seuls les tirages aléatoires comptent. */
+export function passphraseBits(options = {}) {
+  const o = checkPassphrase(options);
+  let bits = o.words * Math.log2(WORDS.length);
+  if (o.number) bits += Math.log2(10 * o.words); // un chiffre ajouté à un mot tiré au hasard
+  return Math.floor(bits);
+}
+
+/** Phrase de passe : mots français tirés uniformément (aléa cryptographique), séparés par `separator`. */
+export function generatePassphrase(options = {}) {
+  const o = checkPassphrase(options);
+  const words = Array.from({ length: o.words }, () => WORDS[randomInt(WORDS.length)]);
+  if (o.number) {
+    const i = randomInt(words.length);
+    words[i] += String(randomInt(10));
+  }
+  return words.map((w) => (o.capitalize ? w[0].toUpperCase() + w.slice(1) : w)).join(o.separator);
 }

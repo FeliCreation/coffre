@@ -87,7 +87,7 @@ test('zip chiffré, corrompu ou sans csv : erreurs claires', async () => {
 
 test('Chrome et Bitwarden', async () => {
   const chrome = await parseExport(new TextEncoder().encode('name,url,username,password,note\nSite,https://s.fr,moi,pw,n'), 'Chrome.csv');
-  assert.deepEqual(chrome.entries[0], { title: 'Site', url: 'https://s.fr', username: 'moi', password: 'pw', notes: 'n' });
+  assert.deepEqual(chrome.entries[0], { title: 'Site', url: 'https://s.fr', username: 'moi', password: 'pw', notes: 'n', folder: '' });
   const bw = await parseExport(new TextEncoder().encode('folder,favorite,type,name,notes,fields,reprompt,login_uri,login_username,login_password,login_totp\n,,login,BW,,,0,https://bw.fr,u,p,\n,,note,Note,x,,0,,,,\n'), 'bw.csv');
   assert.equal(bw.entries.length, 1);
   assert.equal(bw.entries[0].title, 'BW');

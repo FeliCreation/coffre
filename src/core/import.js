@@ -73,6 +73,7 @@ const MAPPERS = {
       password: r.password ?? '',
       notes: join(clean(r.note), users.length > 1 && `Autres identifiants : ${users.slice(1).join(', ')}`, otp && !validTotp(otp) && `Code à usage unique (TOTP) : ${otp}`),
       totp: otp && validTotp(otp) ? otp : '',
+      folder: clean(r.category),
     };
   },
   bitwarden(r) {
@@ -85,9 +86,10 @@ const MAPPERS = {
       password: r.login_password ?? '',
       notes: join(clean(r.notes), totp && !validTotp(totp) && `Code à usage unique (TOTP) : ${totp}`),
       totp: totp && validTotp(totp) ? totp : '',
+      folder: clean(r.folder),
     };
   },
-  chrome: (r) => ({ title: clean(r.name), url: clean(r.url), username: clean(r.username), password: r.password ?? '', notes: clean(r.note) }),
+  chrome: (r) => ({ title: clean(r.name), url: clean(r.url), username: clean(r.username), password: r.password ?? '', notes: clean(r.note), folder: clean(r.folder) }),
   generique: (r) => ({
     title: clean(r.title || r.name),
     url: clean(r.url || r.login_uri),

@@ -71,6 +71,11 @@ function signature(d) {
 
 const summary = ({ password, notes, history, totp, ...rest }) => ({ ...rest, hasNotes: !!notes, hasTotp: !!totp });
 
+export const FOLDER_MAX = 60;
+
+/** Nom de dossier normalisé : espaces nettoyés, 60 caractères au plus ; vide = aucun dossier. */
+export const cleanFolder = (v) => String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, FOLDER_MAX);
+
 /** Clé 2FA : vide = aucune ; sinon doit être valide (sinon VaultError BAD_TOTP). */
 function checkTotp(v) {
   const t = (v ?? '').trim();
@@ -251,7 +256,7 @@ export class Vault {
     return e;
   }
 
-  addEntry({ title = '', url = '', username = '', password = '', notes = '', totp = '', favorite = false, source = null } = {}) {
+  addEntry({ title = '', url = '', username = '', password = '', notes = '', totp = '', favorite = false, folder = '', source = null } = {}) {
     if (!title.trim() && !url.trim()) throw new VaultError('EMPTY', 'Un titre ou une adresse est requis.');
     const now = Date.now();
     const entry = {
@@ -263,6 +268,7 @@ export class Vault {
       notes,
       totp: checkTotp(totp),
       favorite: !!favorite,
+      folder: cleanFolder(folder),
       history: [],
       source,
       createdAt: now,
@@ -295,7 +301,7 @@ export class Vault {
       try {
         totp = checkTotp(entry.totp);
       } catch {} // clé 2FA illisible : on importe quand même l'identifiant
-      this.addEntry({ title: entry.title, url: entry.url, username: entry.username, password: entry.password, notes: entry.notes, totp });
+      this.addEntry({ title: entry.title, url: entry.url, username: entry.username, password: entry.password, notes: entry.notes, totp, folder: entry.folder });
       added++;
     }
     return { added, duplicates, invalid };
@@ -303,7 +309,8 @@ export class Vault {
 
   updateEntry(id, patch) {
     const e = this.#find(id);
-    const allowed = ['title', 'url', 'username', 'password', 'notes', 'totp', 'favorite'];
+    const allowed = ['title', 'url', 'username', 'password', 'notes', 'totp', 'favorite', 'folder'];
+    if (patch.folder !== undefined) patch = { ...patch, folder: cleanFolder(patch.folder) };
     if (patch.favorite !== undefined) patch = { ...patch, favorite: !!patch.favorite };
     if (patch.totp !== undefined) patch = { ...patch, totp: checkTotp(patch.totp) };
     if (patch.password !== undefined && patch.password !== e.password) {
@@ -312,6 +319,20 @@ export class Vault {
     for (const k of allowed) if (patch[k] !== undefined) e[k] = patch[k];
     e.updatedAt = Date.now();
     return summary(e);
+  }
+
+  /** Renomme un dossier (to = '' : supprime le dossier, les identifiants restent sans dossier). Renvoie le nombre d'identifiants touchés. */
+  renameFolder(from, to) {
+    const src = cleanFolder(from);
+    const dst = cleanFolder(to);
+    let n = 0;
+    for (const e of this.data.entries) {
+      if ((e.folder ?? '') !== src || !src) continue;
+      e.folder = dst;
+      e.updatedAt = Date.now();
+      n++;
+    }
+    return n;
   }
 
   deleteEntry(id) {
@@ -333,7 +354,7 @@ export class Vault {
   search(query) {
     const q = query.trim().toLowerCase();
     if (!q) return this.list();
-    return this.list().filter((e) => [e.title, e.url, e.username].some((f) => f.toLowerCase().includes(q)));
+    return this.list().filter((e) => [e.title, e.url, e.username, e.folder ?? ''].some((f) => f.toLowerCase().includes(q)));
   }
 
   /** Entrées proposables pour un site (jamais de correspondance partielle de nom de domaine). */

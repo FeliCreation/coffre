@@ -1,7 +1,7 @@
 // Export CSV (NON chiffré) et validation d'une sauvegarde chiffrée. Format CSV = celui de Chrome :
 // importable tel quel dans Chrome, Bitwarden, Dashlane, et ré-importable dans Coffre.
 
-const COLUMNS = ['name', 'url', 'username', 'password', 'note'];
+const COLUMNS = ['name', 'url', 'username', 'password', 'note', 'folder'];
 
 const cell = (v) => {
   const s = String(v ?? '');
@@ -9,7 +9,7 @@ const cell = (v) => {
 };
 
 export function toCsv(entries) {
-  const rows = entries.map((e) => [e.title, e.url, e.username, e.password, e.notes].map(cell).join(','));
+  const rows = entries.map((e) => [e.title, e.url, e.username, e.password, e.notes, e.folder].map(cell).join(','));
   return `${[COLUMNS.join(','), ...rows].join('\r\n')}\r\n`;
 }
 

@@ -73,7 +73,7 @@ test('export CSV : champs piégés, ré-import identique', async () => {
     { title: 'Simple', url: 'exemple.fr', username: '', password: 'x', notes: '' },
   ];
   const csv = toCsv(entries);
-  assert.ok(csv.startsWith('name,url,username,password,note\r\n'));
+  assert.ok(csv.startsWith('name,url,username,password,note,folder\r\n'));
   const back = await parseExport(new TextEncoder().encode(csv), 'export.csv');
   assert.equal(back.format, 'chrome');
   assert.equal(back.entries.length, 2);
