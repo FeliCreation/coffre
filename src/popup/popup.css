@@ -81,3 +81,7 @@ textarea.code{font-family:ui-monospace,Consolas,monospace;font-size:11px;word-br
 .issue{display:flex;justify-content:space-between;align-items:center;gap:8px;width:100%;text-align:left;border:0;border-bottom:1px solid var(--line);background:none;padding:8px 2px;color:var(--text);font:inherit;cursor:pointer}
 .issue:hover{background:var(--bg2)}
 .totp{font-size:15px;font-weight:600;letter-spacing:.06em}
+.btn.icon.fav{color:var(--warn)}
+.spin svg{animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.hint{background:var(--accent-bg);border-radius:8px;padding:8px 10px;margin-top:12px;text-align:left}

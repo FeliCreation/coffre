@@ -251,7 +251,7 @@ export class Vault {
     return e;
   }
 
-  addEntry({ title = '', url = '', username = '', password = '', notes = '', totp = '', source = null } = {}) {
+  addEntry({ title = '', url = '', username = '', password = '', notes = '', totp = '', favorite = false, source = null } = {}) {
     if (!title.trim() && !url.trim()) throw new VaultError('EMPTY', 'Un titre ou une adresse est requis.');
     const now = Date.now();
     const entry = {
@@ -262,6 +262,7 @@ export class Vault {
       password,
       notes,
       totp: checkTotp(totp),
+      favorite: !!favorite,
       history: [],
       source,
       createdAt: now,
@@ -302,7 +303,8 @@ export class Vault {
 
   updateEntry(id, patch) {
     const e = this.#find(id);
-    const allowed = ['title', 'url', 'username', 'password', 'notes', 'totp'];
+    const allowed = ['title', 'url', 'username', 'password', 'notes', 'totp', 'favorite'];
+    if (patch.favorite !== undefined) patch = { ...patch, favorite: !!patch.favorite };
     if (patch.totp !== undefined) patch = { ...patch, totp: checkTotp(patch.totp) };
     if (patch.password !== undefined && patch.password !== e.password) {
       e.history = [{ password: e.password, changedAt: Date.now() }, ...e.history].slice(0, HISTORY_MAX);

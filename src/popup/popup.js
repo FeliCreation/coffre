@@ -18,6 +18,8 @@ const S = {
   genOpts: { ...DEFAULTS },
   genPw: '',
   health: { audit: null, breaches: null },
+  sync: null, // état de la synchro (null : coffre verrouillé ou synchro non configurée)
+  syncing: false,
 };
 
 try {
@@ -61,8 +63,56 @@ async function enter() {
       S.pending = (await api({ type: 'pendingForTab', tabId: S.tabId })).pending;
     } catch {}
   }
+  try {
+    const st = await api({ type: 'syncStatus' });
+    S.sync = st.configured ? st : null;
+  } catch {
+    S.sync = null;
+  }
   renderMain();
+  autoSync();
 }
+
+// ---------- Synchronisation visible ----------
+
+let syncBtn = null;
+let lastAutoSync = 0;
+
+function paintSyncButton() {
+  if (!syncBtn) return;
+  syncBtn.classList.toggle('spin', S.syncing);
+  syncBtn.title = S.sync?.last?.ok === false ? `Synchroniser (dernier essai en échec : ${S.sync.last.error})` : 'Synchroniser';
+}
+
+/** Synchronise puis rafraîchit la liste si d'autres appareils ont changé quelque chose. `manual` : affiche le résultat. */
+async function autoSync(manual = false) {
+  if (!S.sync?.configured || S.syncing) return;
+  S.syncing = true;
+  lastAutoSync = Date.now();
+  paintSyncButton();
+  try {
+    const r = await api({ type: 'syncNow' });
+    if (r.pulled) {
+      S.entries = (await api({ type: 'list', query: '' })).entries;
+      S.health = { audit: null, breaches: null };
+      if (!S.view) renderMain(); // jamais pendant une saisie dans un formulaire
+    }
+    S.sync = await api({ type: 'syncStatus' });
+    if (manual) toast(r.pulled ? 'Synchronisé : des changements sont arrivés' : 'Synchronisé');
+  } catch (e) {
+    if (e.code === 'LOCKED') return viewUnlock();
+    if (manual) toast(e.message, true);
+    try { S.sync = await api({ type: 'syncStatus' }); } catch {}
+  } finally {
+    S.syncing = false;
+    paintSyncButton();
+  }
+}
+
+// Retour au premier plan (téléphone : retour sur l'application) : mise à jour discrète si la dernière date de plus de 30 s.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && S.sync?.configured && Date.now() - lastAutoSync > 30_000) autoSync();
+});
 
 // ---------- Création et déverrouillage ----------
 
@@ -107,12 +157,12 @@ function viewCreate() {
     h('p', { class: 'sub' }, "Ce mot de passe protège tout le reste. Il n'existe aucun moyen de le récupérer : si vous l'oubliez, le contenu du coffre est perdu."),
     pw, meter, pw2, err, btn,
     h('button', { class: 'btn block', onclick: viewJoin }, "J'ai déjà un coffre sur un autre appareil"),
-    restoreButton(err)));
+    restoreButton(err), installHint()));
   pw.focus();
 }
 
 function viewUnlock() {
-  Object.assign(S, { view: null, entries: [], pending: null, share: null, shareResult: '', genPw: '', health: { audit: null, breaches: null } }); // rien ne reste en mémoire une fois verrouillé
+  Object.assign(S, { view: null, entries: [], pending: null, share: null, shareResult: '', genPw: '', health: { audit: null, breaches: null }, sync: null, syncing: false }); // rien ne reste en mémoire une fois verrouillé
   const pw = h('input', { class: 'input', type: 'password', placeholder: 'Mot de passe maître', autocomplete: 'current-password' });
   const err = h('p', { class: 'error' });
   const submit = async () => {
@@ -132,8 +182,16 @@ function viewUnlock() {
   const btn = h('button', { class: 'btn primary block', onclick: submit }, 'Déverrouiller');
   pw.addEventListener('keydown', (e) => e.key === 'Enter' && submit());
   mount(h('div', { class: 'center' }, icon('lock', 28), h('h1', {}, 'Coffre verrouillé'), pw, err, btn,
-    h('button', { class: 'btn block', onclick: viewRecover }, 'Mot de passe oublié ?')));
+    h('button', { class: 'btn block', onclick: viewRecover }, 'Mot de passe oublié ?'), installHint()));
   pw.focus();
+}
+
+/** iPhone/iPad dans Safari : l'icône de l'écran d'accueil a son propre espace de stockage, séparé de Safari. */
+function installHint() {
+  const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const standalone = navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
+  if (!window.COFFRE_APP || !ios || standalone) return null;
+  return h('p', { class: 'sub hint' }, "Astuce : touchez Partager puis « Sur l'écran d'accueil », et ouvrez Coffre depuis l'icône. L'icône et Safari ont chacun leur propre coffre local : choisissez-en un seul.");
 }
 
 /** Mot de passe maître oublié : le kit de récupération rouvre le coffre, puis on choisit un nouveau mot de passe. */
@@ -185,9 +243,12 @@ function restoreButton(err) {
 // ---------- Cadre principal ----------
 
 function renderMain() {
+  syncBtn = !S.view && S.sync?.configured ? iconButton('refresh', 'Synchroniser', () => autoSync(true)) : null;
+  paintSyncButton();
   const head = h('header', {},
     S.view ? iconButton('back', 'Retour', () => { S.view = null; renderMain(); }) : null,
     h('span', { class: 'title' }, S.view ? viewTitle() : 'Coffre'),
+    syncBtn,
     S.view ? null : iconButton('gear', 'Réglages', () => { S.view = { name: 'settings' }; renderMain(); }),
     iconButton('lock', 'Verrouiller', guard(async () => { await api({ type: 'lock' }); viewUnlock(); })));
   const parts = [head];
@@ -240,6 +301,17 @@ function pendingBanner() {
       h('button', { class: 'btn small', onclick: guard(async () => { await api({ type: 'dismissPending', tabId: S.tabId }); done(); }) }, 'Ignorer')));
 }
 
+/** Étoile : épingle l'identifiant en haut de la liste (favori). */
+function favButton(e) {
+  const b = iconButton(e.favorite ? 'starOn' : 'star', e.favorite ? 'Retirer des favoris' : 'Ajouter aux favoris', guard(async () => {
+    await api({ type: 'update', id: e.id, patch: { favorite: !e.favorite } });
+    S.entries = (await api({ type: 'list', query: '' })).entries;
+    renderMain();
+  }));
+  if (e.favorite) b.classList.add('fav');
+  return b;
+}
+
 function entryRow(e, { fillBtn = false, first = false } = {}) {
   return h('div', { class: `row${first ? ' first' : ''}` },
     h('div', { class: 'av' }, initials(e.title)),
@@ -249,7 +321,8 @@ function entryRow(e, { fillBtn = false, first = false } = {}) {
       e.source ? h('div', { class: 'sub' }, `Partagé par ${e.source.sharedBy.slice(0, 8).toUpperCase().match(/.{4}/g).join(' ')}`) : null),
     fillBtn
       ? h('button', { class: 'btn small', onclick: guard(() => fillEntry(e.id)) }, 'Remplir')
-      : [siteUrl(e.url) ? iconButton('external', 'Ouvrir le site', () => openSite(e.url)) : null,
+      : [favButton(e),
+         siteUrl(e.url) ? iconButton('external', 'Ouvrir le site', () => openSite(e.url)) : null,
          iconButton('user', "Copier l'identifiant", () => copyText(e.username, 'Identifiant copié')),
          iconButton('key', 'Copier le mot de passe', guard(async () => copyText((await api({ type: 'reveal', id: e.id })).entry.password, 'Mot de passe copié', true)))]);
 }
@@ -261,13 +334,17 @@ function renderList(list) {
     nodes.push(h('div', { class: 'empty' }, h('p', {}, 'Votre coffre est vide.'), h('p', { class: 'sub' }, 'Ajoutez un premier identifiant, ou connectez-vous à un site : Coffre proposera de l’enregistrer.')));
   } else if (q) {
     const found = S.entries.filter((e) => [e.title, e.url, e.username].some((f) => f.toLowerCase().includes(q)));
+    found.sort((a, b) => Number(!!b.favorite) - Number(!!a.favorite)); // favoris d'abord (tri stable : l'ordre alphabétique reste)
     nodes.push(h('h2', {}, `Résultats (${found.length})`), ...found.map((e, i) => entryRow(e, { first: i === 0 })));
   } else {
     const here = forSite();
     const ids = new Set(here.map((e) => e.id));
-    const others = S.entries.filter((e) => !ids.has(e.id));
+    const rest = S.entries.filter((e) => !ids.has(e.id));
+    const favs = rest.filter((e) => e.favorite);
+    const others = rest.filter((e) => !e.favorite);
     if (here.length) nodes.push(h('h2', {}, 'Pour ce site'), ...here.map((e, i) => entryRow(e, { fillBtn: true, first: i === 0 })));
-    if (others.length) nodes.push(h('h2', {}, 'Tous les identifiants'), ...others.map((e, i) => entryRow(e, { first: i === 0 })));
+    if (favs.length) nodes.push(h('h2', {}, 'Favoris'), ...favs.map((e, i) => entryRow(e, { first: i === 0 })));
+    if (others.length) nodes.push(h('h2', {}, favs.length || here.length ? 'Autres identifiants' : 'Tous les identifiants'), ...others.map((e, i) => entryRow(e, { first: i === 0 })));
   }
   list.replaceChildren(...nodes);
 }
@@ -323,10 +400,18 @@ function viewDetail(body) {
     kv('Adresse', e.url || '—', siteUrl(e.url) ? iconButton('external', 'Ouvrir le site', () => openSite(e.url)) : null),
     e.totp ? totpRow(e.id, kv) : null,
     e.notes ? kv('Notes', e.notes) : null,
+    e.updatedAt ? kv('Modifié', new Date(e.updatedAt).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' })) : null,
     e.history?.length ? kv('Historique', `${e.history.length} ancien${e.history.length > 1 ? 's' : ''} mot${e.history.length > 1 ? 's' : ''} de passe`) : null,
     e.source ? kv('Partagé par', h('span', { class: 'mono' }, e.source.sharedBy.slice(0, 32).toUpperCase().match(/.{4}/g).join(' '))) : null,
     h('div', { class: 'actions' },
       siteUrl(e.url) ? h('button', { class: 'btn primary', onclick: () => openSite(e.url) }, icon('external'), ' Ouvrir le site') : null,
+      h('button', { class: 'btn', onclick: guard(async () => {
+        await api({ type: 'update', id: e.id, patch: { favorite: !e.favorite } });
+        e.favorite = !e.favorite;
+        S.entries = (await api({ type: 'list', query: '' })).entries;
+        toast(e.favorite ? 'Ajouté aux favoris' : 'Retiré des favoris');
+        renderMain();
+      }) }, icon(e.favorite ? 'starOn' : 'star'), e.favorite ? ' Favori' : ' Favoris'),
       h('button', { class: 'btn', onclick: () => { S.view = { name: 'form', id: e.id, prefill: e }; renderMain(); } }, icon('edit'), ' Modifier'),
       h('button', { class: 'btn', onclick: () => { S.shareEntryId = e.id; S.shareResult = ''; S.view = null; S.tab = 'partage'; renderMain(); } }, icon('share'), ' Partager'),
       confirmBtn),
@@ -510,11 +595,14 @@ function tabPartage(body) {
   const ttl = h('select', {}, [[1, '1 heure'], [24, '24 heures'], [72, '72 heures'], [168, '7 jours']].map(([v, l]) => h('option', { value: v, selected: v === 72 }, `Valable ${l}`)));
   const result = h('textarea', { class: 'code', readOnly: true, rows: 3, value: S.shareResult, hidden: !S.shareResult });
   const copyResult = h('button', { class: 'btn small', hidden: !S.shareResult, onclick: () => copyText(result.value, 'Code de partage copié') }, 'Copier le code');
+  // Téléphone : la feuille de partage du système (Messages, WhatsApp, Mail…)
+  const sendResult = navigator.share ? h('button', { class: 'btn small', hidden: !S.shareResult, onclick: () => navigator.share({ text: result.value }).catch(() => {}) }, 'Envoyer…') : null;
   const incoming = h('textarea', { class: 'code', placeholder: 'Collez le code reçu (coffre-share:1:…)', rows: 2 });
   const info = h('p', { class: 'sub' });
   body.append(
     h('h2', { style: 'margin-top:0' }, 'Votre code de partage'),
-    h('div', { class: 'pw' }, h('span', { class: 'mono', style: 'font-size:11px' }, S.share.code), iconButton('copy', 'Copier', () => copyText(S.share.code, 'Code copié'))),
+    h('div', { class: 'pw' }, h('span', { class: 'mono', style: 'font-size:11px' }, S.share.code), iconButton('copy', 'Copier', () => copyText(S.share.code, 'Code copié')),
+      navigator.share ? iconButton('share', 'Envoyer', () => navigator.share({ text: S.share.code }).catch(() => {})) : null),
     h('p', { class: 'sub', style: 'margin-top:6px' }, 'Empreinte : ', h('span', { class: 'mono' }, S.share.fingerprint), h('br'), 'Lisez-la à voix haute à votre contact pour vérifier que le code est bien le vôtre.'),
     h('h2', {}, 'Envoyer un identifiant'),
     S.entries.length ? h('div', {}, h('div', { class: 'field' }, pick), h('div', { class: 'field' }, recipient),
@@ -525,9 +613,10 @@ function tabPartage(body) {
         result.value = code;
         result.hidden = false;
         copyResult.hidden = false;
+        if (sendResult) sendResult.hidden = false;
         toast('Code de partage créé');
       }) }, 'Créer le code')),
-      h('div', { class: 'field', style: 'margin-top:8px' }, result), copyResult,
+      h('div', { class: 'field', style: 'margin-top:8px' }, result), h('div', { class: 'inline' }, copyResult, sendResult),
       h('p', { class: 'sub', style: 'margin-top:6px' }, 'Seul le destinataire peut ouvrir ce code. Envoyez-le par le canal de votre choix.'))
       : h('p', { class: 'sub' }, 'Ajoutez d’abord un identifiant dans le coffre.'),
     h('h2', {}, 'Recevoir un identifiant'),
