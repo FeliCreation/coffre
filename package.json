@@ -5,6 +5,7 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "test": "node --test \"tests/*.test.js\""
+    "test": "node --test \"tests/*.test.js\"",
+    "e2e": "node dev/e2e-chrome.mjs \"C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe\""
   }
 }

@@ -77,3 +77,4 @@ textarea.code{font-family:ui-monospace,Consolas,monospace;font-size:11px;word-br
 #toast{position:fixed;left:50%;bottom:12px;transform:translate(-50%,20px);background:var(--text);color:var(--bg);padding:7px 14px;border-radius:8px;opacity:0;pointer-events:none;transition:.18s;max-width:90%;text-align:center}
 #toast.show{opacity:1;transform:translate(-50%,0)}
 #toast.err{background:var(--bad);color:#fff}
+.kitcode{font-size:15px;font-weight:600;letter-spacing:.04em;user-select:all;padding:8px 10px;background:var(--bg2);border-radius:8px}

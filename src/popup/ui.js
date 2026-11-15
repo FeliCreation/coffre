@@ -61,6 +61,16 @@ export async function copyText(value, what = 'Copié') {
   }
 }
 
+/** Télécharge un texte comme fichier (le navigateur propose l'enregistrement). */
+export function download(filename, text, type = 'text/plain') {
+  const url = URL.createObjectURL(new Blob([text], { type: `${type};charset=utf-8` }));
+  const a = h('a', { href: url, download: filename });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
 /** Appelle le service worker ; lève une Error (avec .code) si la réponse n'est pas ok. */
 export async function api(msg) {
   const res = await chrome.runtime.sendMessage(msg);

@@ -3,9 +3,11 @@
 
 import * as C from './crypto.js';
 import * as S from './share.js';
+import { newRecoveryCode, normalizeRecoveryCode } from './recovery.js';
 
 const AAD_DATA = 'coffre:data:1';
 const AAD_WRAP = 'coffre:wrap:1';
+const AAD_RECOVERY = 'coffre:recovery:1';
 const MIN_PASSWORD_LENGTH = 10;
 const HISTORY_MAX = 5;
 
@@ -134,8 +136,42 @@ export class Vault {
     const salt = C.randomBytes(16);
     const kek = await C.deriveKek(newPassword, salt, iterations);
     const wrappedKey = await C.seal(kek, await C.exportKey(this.#key), AAD_WRAP);
-    this.#header = { v: 1, kdf: { name: 'PBKDF2-SHA256', iterations, salt: C.toB64(salt) }, wrappedKey };
+    const { recovery } = this.#header;
+    this.#header = { v: 1, kdf: { name: 'PBKDF2-SHA256', iterations, salt: C.toB64(salt) }, wrappedKey, ...(recovery ? { recovery } : {}) };
     this.data.headerAt = Date.now(); // permet à la synchro de savoir quel en-tête est le plus récent
+  }
+
+  // ----- Kit de récupération -----
+
+  get hasRecovery() {
+    return !!this.#header.recovery;
+  }
+
+  /** Crée (ou remplace) le kit : renvoie le code à afficher UNE fois. L'ancien code cesse de fonctionner. */
+  async createRecoveryKit({ iterations = C.KDF_ITERATIONS } = {}) {
+    const code = newRecoveryCode();
+    const salt = C.randomBytes(16);
+    const kek = await C.deriveKek(normalizeRecoveryCode(code), salt, iterations);
+    const wrappedKey = await C.seal(kek, await C.exportKey(this.#key), AAD_RECOVERY);
+    this.#header = { ...this.#header, recovery: { iterations, salt: C.toB64(salt), wrappedKey } };
+    this.data.headerAt = Date.now();
+    return code;
+  }
+
+  /** Rouvre le coffre avec le code de récupération (à suivre d'un changeMasterPassword). */
+  static async unlockWithRecovery(stored, code) {
+    if (stored?.v !== 1) throw new VaultError('BAD_FORMAT', 'Format de coffre inconnu.');
+    if (!stored.recovery) throw new VaultError('NO_RECOVERY', "Aucun kit de récupération n'a été créé pour ce coffre.");
+    const norm = normalizeRecoveryCode(code);
+    if (!norm) throw new VaultError('WRONG_RECOVERY', 'Code de récupération invalide (32 lettres et chiffres).');
+    const kek = await C.deriveKek(norm, C.fromB64(stored.recovery.salt), stored.recovery.iterations);
+    let raw;
+    try {
+      raw = await C.open(kek, stored.recovery.wrappedKey, AAD_RECOVERY);
+    } catch {
+      throw new VaultError('WRONG_RECOVERY', 'Code de récupération incorrect.');
+    }
+    return Vault.#load(stored, await C.importVaultKey(raw));
   }
 
   // ----- Synchronisation -----

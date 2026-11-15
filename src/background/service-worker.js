@@ -5,6 +5,7 @@
 import { Vault, VaultError, hostOf, hostMatches } from '../core/vault.js';
 import { generatePassword, estimateStrength } from '../core/generator.js';
 import { syncVault, fetchRemoteVault, checkConfig } from '../core/sync.js';
+import { toCsv, parseBackup, backupFilename, csvFilename } from '../core/export.js';
 
 const KEY_VAULT = 'vault';
 const KEY_SESSION = 'sessionKey';
@@ -252,6 +253,48 @@ const actions = {
     const res = v.importEntries(clean);
     if (res.added) await persist(v);
     return res;
+  },
+  // ----- Sauvegarde, export, kit de récupération -----
+
+  /** Sauvegarde : le coffre tel que stocké (déjà chiffré). Sans le mot de passe maître, elle est inutilisable. */
+  async exportBackup() {
+    const v = await unlockedVault();
+    return { json: JSON.stringify(await v.serialize()), filename: backupFilename() };
+  },
+  /** Appareil sans coffre : restaure une sauvegarde ; on la déverrouille ensuite avec son mot de passe maître. */
+  async restoreBackup({ json }) {
+    if (await stored()) throw new VaultError('EXISTS', 'Un coffre existe déjà sur cet appareil.');
+    if (typeof json !== 'string' || json.length > 50_000_000) throw new VaultError('BAD_BACKUP', "Ce fichier n'est pas une sauvegarde Coffre.");
+    await chrome.storage.local.set({ [KEY_VAULT]: parseBackup(json) });
+    return {};
+  },
+  /** Export CSV EN CLAIR : redemande le mot de passe maître (quelqu'un devant un coffre resté ouvert ne l'obtient pas). */
+  async exportCsv({ password }) {
+    await Vault.unlock(await stored(), password);
+    const v = await unlockedVault();
+    const entries = v.list().map((e) => v.getEntry(e.id));
+    return { csv: toCsv(entries), count: entries.length, filename: csvFilename() };
+  },
+  async recoveryStatus() {
+    return { has: (await unlockedVault()).hasRecovery };
+  },
+  /** Crée un nouveau kit (l'ancien code cesse de marcher). Le code n'est renvoyé qu'ici, jamais stocké. */
+  async createRecovery({ password }) {
+    await Vault.unlock(await stored(), password);
+    const v = await unlockedVault();
+    const code = await v.createRecoveryKit();
+    await persist(v);
+    return { code };
+  },
+  /** Mot de passe maître oublié : le kit rouvre le coffre, on choisit un nouveau mot de passe. */
+  async recover({ code, newPassword }) {
+    const st = await stored();
+    if (!st) throw new VaultError('NO_VAULT', 'Aucun coffre.');
+    const v = await Vault.unlockWithRecovery(st, code);
+    await v.changeMasterPassword(newPassword);
+    await persist(v);
+    await startSession(v);
+    return {};
   },
   async syncStatus() {
     const v = await unlockedVault();

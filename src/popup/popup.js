@@ -1,4 +1,4 @@
-import { h, icon, iconButton, toast, copyText, api, initials } from './ui.js';
+import { h, icon, iconButton, toast, copyText, api, initials, download } from './ui.js';
 import { hostOf, hostMatches, siteUrl } from '../core/vault.js';
 import { generatePassword, estimateStrength, DEFAULTS } from '../core/generator.js';
 
@@ -105,7 +105,8 @@ function viewCreate() {
     h('h1', {}, 'Créer votre coffre'),
     h('p', { class: 'sub' }, "Ce mot de passe protège tout le reste. Il n'existe aucun moyen de le récupérer : si vous l'oubliez, le contenu du coffre est perdu."),
     pw, meter, pw2, err, btn,
-    h('button', { class: 'btn block', onclick: viewJoin }, "J'ai déjà un coffre sur un autre appareil")));
+    h('button', { class: 'btn block', onclick: viewJoin }, "J'ai déjà un coffre sur un autre appareil"),
+    restoreButton(err)));
   pw.focus();
 }
 
@@ -129,8 +130,55 @@ function viewUnlock() {
   };
   const btn = h('button', { class: 'btn primary block', onclick: submit }, 'Déverrouiller');
   pw.addEventListener('keydown', (e) => e.key === 'Enter' && submit());
-  mount(h('div', { class: 'center' }, icon('lock', 28), h('h1', {}, 'Coffre verrouillé'), pw, err, btn));
+  mount(h('div', { class: 'center' }, icon('lock', 28), h('h1', {}, 'Coffre verrouillé'), pw, err, btn,
+    h('button', { class: 'btn block', onclick: viewRecover }, 'Mot de passe oublié ?')));
   pw.focus();
+}
+
+/** Mot de passe maître oublié : le kit de récupération rouvre le coffre, puis on choisit un nouveau mot de passe. */
+function viewRecover() {
+  const code = h('input', { class: 'input mono', placeholder: 'Code de récupération (XXXX-XXXX-…)', autocomplete: 'off', spellcheck: false });
+  const pw = h('input', { class: 'input', type: 'password', placeholder: 'Nouveau mot de passe maître', autocomplete: 'new-password' });
+  const pw2 = h('input', { class: 'input', type: 'password', placeholder: 'Confirmer le nouveau mot de passe', autocomplete: 'new-password' });
+  const err = h('p', { class: 'error' });
+  const submit = async () => {
+    err.textContent = '';
+    if (pw.value !== pw2.value) return void (err.textContent = 'Les deux mots de passe sont différents.');
+    btn.disabled = true;
+    btn.textContent = 'Récupération…';
+    try {
+      await api({ type: 'recover', code: code.value, newPassword: pw.value });
+      toast('Mot de passe maître remplacé');
+      await enter();
+    } catch (e) {
+      err.textContent = e.message;
+      btn.disabled = false;
+      btn.textContent = 'Récupérer mon coffre';
+    }
+  };
+  const btn = h('button', { class: 'btn primary block', onclick: submit }, 'Récupérer mon coffre');
+  pw2.addEventListener('keydown', (e) => e.key === 'Enter' && submit());
+  mount(h('div', { class: 'center' }, icon('key', 28), h('h1', {}, 'Kit de récupération'),
+    h('p', { class: 'sub' }, "Saisissez le code de 32 caractères noté lors de la création du kit, puis choisissez un nouveau mot de passe maître. Sans kit, le coffre ne peut pas être rouvert."),
+    code, pw, pw2, err, btn, h('button', { class: 'btn block', onclick: viewUnlock }, 'Retour')));
+  code.focus();
+}
+
+/** Appareil neuf : restaure un fichier de sauvegarde chiffré, qu'on déverrouille ensuite avec son mot de passe maître. */
+function restoreButton(err) {
+  const file = h('input', { type: 'file', accept: '.json,application/json', hidden: true });
+  file.addEventListener('change', async () => {
+    const f = file.files?.[0];
+    if (!f) return;
+    try {
+      await api({ type: 'restoreBackup', json: await f.text() });
+      toast('Sauvegarde restaurée : saisissez votre mot de passe maître');
+      viewUnlock();
+    } catch (e) {
+      err.textContent = e.message;
+    }
+  });
+  return h('div', {}, file, h('button', { class: 'btn block', onclick: () => file.click() }, 'Restaurer une sauvegarde'));
 }
 
 // ---------- Cadre principal ----------
@@ -486,6 +534,76 @@ function viewJoin() {
   f.repo.focus();
 }
 
+// ---------- Sauvegarde et récupération ----------
+
+async function backupSection() {
+  let has;
+  try {
+    has = (await api({ type: 'recoveryStatus' })).has;
+  } catch (e) {
+    return h('p', { class: 'error' }, e.message);
+  }
+
+  // Sauvegarde chiffrée : le fichier est inutilisable sans le mot de passe maître.
+  const backup = h('button', { class: 'btn', onclick: guard(async () => {
+    const r = await api({ type: 'exportBackup' });
+    download(r.filename, r.json, 'application/json');
+    toast('Sauvegarde téléchargée');
+  }) }, 'Télécharger une sauvegarde chiffrée');
+
+  // Export CSV : en clair, donc protégé par le mot de passe maître.
+  const csvPw = h('input', { class: 'input', type: 'password', placeholder: 'Mot de passe maître', autocomplete: 'current-password' });
+  const csvErr = h('p', { class: 'error' });
+  const csv = h('button', { class: 'btn', onclick: async () => {
+    csvErr.textContent = '';
+    try {
+      const r = await api({ type: 'exportCsv', password: csvPw.value });
+      download(r.filename, r.csv, 'text/csv');
+      csvPw.value = '';
+      toast(`${r.count} identifiants exportés : supprimez le fichier après usage`);
+    } catch (e) {
+      csvErr.textContent = e.code === 'WRONG_PASSWORD' ? 'Mot de passe maître incorrect.' : e.message;
+    }
+  } }, 'Exporter en CSV (non chiffré)');
+
+  // Kit de récupération : le code n'est affiché qu'une fois, ici.
+  const kitPw = h('input', { class: 'input', type: 'password', placeholder: 'Mot de passe maître', autocomplete: 'current-password' });
+  const kitErr = h('p', { class: 'error' });
+  const kitBox = h('div', {});
+  const showKit = (code) => {
+    const text = `Kit de récupération Coffre\r\nCréé le ${new Date().toLocaleDateString('fr-FR')}\r\n\r\nCode : ${code}\r\n\r\nCe code rouvre votre coffre si vous oubliez le mot de passe maître.\r\nConservez-le HORS de cet ordinateur (papier, coffre physique). Ne le partagez avec personne.\r\nUn nouveau kit remplace celui-ci.\r\n`;
+    kitBox.replaceChildren(
+      h('p', { class: 'sub' }, 'Notez ce code maintenant : il ne sera plus jamais affiché.'),
+      h('p', { class: 'mono kitcode' }, code),
+      h('div', { class: 'actions' },
+        h('button', { class: 'btn', onclick: () => copyText(code, 'Code copié') }, icon('copy'), ' Copier'),
+        h('button', { class: 'btn', onclick: () => download('coffre-kit-recuperation.txt', text) }, 'Télécharger (.txt)')));
+  };
+  const kit = h('button', { class: 'btn', onclick: async () => {
+    kitErr.textContent = '';
+    try {
+      const r = await api({ type: 'createRecovery', password: kitPw.value });
+      kitPw.value = '';
+      kit.textContent = 'Remplacer le kit';
+      showKit(r.code);
+    } catch (e) {
+      kitErr.textContent = e.code === 'WRONG_PASSWORD' ? 'Mot de passe maître incorrect.' : e.message;
+    }
+  } }, has ? 'Remplacer le kit' : 'Créer un kit de récupération');
+
+  return h('div', {},
+    h('p', { class: 'sub' }, 'Une sauvegarde est le coffre chiffré : sans votre mot de passe maître, elle est inutilisable.'),
+    backup,
+    h('h2', {}, 'Exporter en CSV'),
+    h('p', { class: 'sub' }, 'Le fichier contient vos mots de passe EN CLAIR. Supprimez-le dès que vous avez fini.'),
+    h('div', { class: 'field' }, csvPw), csvErr, csv,
+    h('h2', {}, 'Kit de récupération'),
+    h('p', { class: 'sub' }, has
+      ? 'Un kit existe : son code rouvre le coffre si le mot de passe maître est oublié.'
+      : "Aucun kit : si vous oubliez le mot de passe maître, le contenu du coffre est perdu. Créez un kit et notez le code hors de l'ordinateur."),
+    h('div', { class: 'field' }, kitPw), kitErr, kit, kitBox);
+}
+
 // ---------- Réglages ----------
 
 async function viewSettings(body) {
@@ -501,6 +619,8 @@ async function viewSettings(body) {
     h('div', { class: 'field' }, h('label', {}, 'Verrouillage automatique après'), lockSel),
     h('h2', {}, 'Synchronisation'),
     await syncSection(),
+    h('h2', {}, 'Sauvegarde et récupération'),
+    await backupSection(),
     window.COFFRE_APP ? null : h('h2', {}, 'Importer'),
     window.COFFRE_APP ? null : h('button', { class: 'btn', onclick: () => chrome.tabs.create({ url: chrome.runtime.getURL('src/import/import.html') }) }, 'Importer depuis Dashlane, Bitwarden, Chrome…'),
     h('h2', {}, 'Changer le mot de passe maître'),
