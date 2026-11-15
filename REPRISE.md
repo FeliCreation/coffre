@@ -18,7 +18,7 @@ L'export Dashlane réel de Cyril n'a jamais été lu par Claude (secrets) ; seul
 Charger l'extension non empaquetée : `chrome://extensions` → Mode développeur → « Charger l'extension non empaquetée » → dossier du projet. Vérifier : popup, console du service worker (lien « service worker »), remplissage sur un vrai site en HTTPS, verrouillage auto.
 
 ## File d'attente
-0. Mise en ligne de l'application (en attente de l'accord de Cyril : création d'un dépôt PUBLIC pour le code + d'un dépôt PRIVÉ vide pour le coffre ; activer Pages « GitHub Actions » ; jeton fine-grained limité au dépôt privé, Contents read/write).
+0. FAIT 2026-11-15 : code public `FeliCreation/coffre` (Pages : https://felicreation.github.io/coffre/app/, déploiement par Actions à chaque push sur main), coffre privé `FeliCreation/coffre-donnees` (vide). Auteur des commits de ce dépôt : noreply FeliCreation (config locale, pour ne pas publier l'e-mail). Reste à Cyril : créer le jeton fine-grained (dépôt coffre-donnees, Contents read/write) et activer la synchro.
 1. Test manuel dans Chrome (voir ci-dessus) puis correctifs.
 2. Export CSV et sauvegarde chiffrée du coffre (l'import Dashlane/Bitwarden/Chrome, .zip ou .csv, est fait : `src/core/import.js`, `src/core/zip.js`, page `src/import/`, ouverte depuis Réglages). Le TOTP Dashlane est conservé dans les notes ; pas de vrai support TOTP encore.
 3. Effacement du presse-papiers après 30 s (impossible depuis la popup qui se ferme : document offscreen ou alarme).
