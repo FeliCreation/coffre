@@ -15,6 +15,7 @@ Extension navigateur (Chrome/Edge, MV3), JavaScript pur en modules ES, **zéro d
 - **Partage sans serveur** : on échange des codes texte par n'importe quel canal. Un partage « en direct » avec serveur est exclu (coût).
 - **Synchro sans serveur** : le coffre chiffré est un fichier d'un dépôt GitHub privé (`core/github.js`, `core/sync.js`), fusionné entrée par entrée (`Vault.mergeRemote`). Le jeton est dans la partie chiffrée du coffre (`data.sync`).
 - **Application web** `app/` (téléphone et PC, PWA sur GitHub Pages) : mêmes popup et service worker que l'extension, avec un faux `chrome` (`app/shim.js`). Pas de remplissage dans les autres applications (limite assumée).
+- **Logiciel Windows** `desktop/CoffreAutoType` : saisie automatique par raccourci global dans n'importe quel logiciel ; lecture seule du coffre synchronisé (voir `desktop/README.md`).
 - `src/popup/` interface (DOM construit sans `innerHTML`) ; `src/content/content.js` badge + remplissage + capture (shadow DOM fermé) ; `dev/` faux `chrome` et harnais navigateur, non livrés.
 - **Remplissage** : jamais silencieux. L'utilisateur clique ; entrées proposées uniquement pour le domaine correspondant ; pas de remplissage dans les iframes tierces.
 

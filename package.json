@@ -6,6 +6,8 @@
   "private": true,
   "scripts": {
     "test": "node --test \"tests/*.test.js\"",
-    "e2e": "node dev/e2e-chrome.mjs \"C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe\""
+    "e2e": "node dev/e2e-chrome.mjs \"C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe\"",
+    "test:desktop": "node dev/desktop-compat.mjs",
+    "e2e:desktop": "node dev/desktop-e2e.mjs"
   }
 }

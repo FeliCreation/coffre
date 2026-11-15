@@ -1,0 +1,36 @@
+# Compile le logiciel Windows de saisie automatique, vérifie qu'il lit le coffre produit par le code JavaScript,
+# et publie le résultat comme fichier téléchargeable de l'exécution (onglet Actions). Gratuit ; aucun secret.
+name: Logiciel Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'desktop/**'
+      - 'src/core/**'
+      - 'dev/desktop-compat.mjs'
+      - '.github/workflows/desktop.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Compatibilité avec le coffre JavaScript
+        run: npm run test:desktop
+      - name: Publier
+        run: dotnet publish desktop/CoffreAutoType -c Release -o dist --nologo
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CoffreAutoType-windows
+          path: dist
