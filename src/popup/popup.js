@@ -176,8 +176,9 @@ function viewUnlock() {
     btn.disabled = true;
     btn.textContent = 'Déverrouillage…';
     try {
-      await api({ type: 'unlock', password: pw.value });
+      const res = await api({ type: 'unlock', password: pw.value, remember: remember.checked });
       await enter();
+      if (res.wantedRemember && !res.remembered) toast("Impossible de mémoriser cet appareil (navigation privée ?) : le coffre se verrouillera normalement.", true);
     } catch (e) {
       err.textContent = e.message;
       btn.disabled = false;
@@ -187,7 +188,19 @@ function viewUnlock() {
   };
   const btn = h('button', { class: 'btn primary block', onclick: submit }, 'Déverrouiller');
   pw.addEventListener('keydown', (e) => e.key === 'Enter' && submit());
-  mount(h('div', { class: 'center' }, icon('lock', 28), h('h1', {}, 'Coffre verrouillé'), pw, err, btn,
+
+  // « Rester connecté » : garde le coffre ouvert N jours sur cet appareil (choix retenu d'une fois sur l'autre).
+  let preferred = false;
+  try { preferred = localStorage.getItem('rememberChecked') === '1'; } catch {}
+  const remember = h('input', { type: 'checkbox', checked: preferred });
+  const rememberText = h('span', {}, ' Rester connecté 15 jours sur cet appareil');
+  remember.addEventListener('change', () => { try { localStorage.setItem('rememberChecked', remember.checked ? '1' : '0'); } catch {} });
+  api({ type: 'getSettings' }).then((r) => { rememberText.textContent = ` Rester connecté ${r.settings.rememberDays} jour${r.settings.rememberDays > 1 ? 's' : ''} sur cet appareil`; }).catch(() => {});
+
+  mount(h('div', { class: 'center' }, icon('lock', 28), h('h1', {}, 'Coffre verrouillé'), pw,
+    h('label', { class: 'check remember' }, remember, rememberText),
+    h('p', { class: 'sub hint' }, "Le coffre reste ouvert sans mot de passe pendant cette durée, même après la fermeture du navigateur. À réserver à un appareil personnel protégé par un code de verrouillage. « Verrouiller » ou « Oublier cet appareil » y met fin."),
+    err, btn,
     h('button', { class: 'btn block', onclick: viewRecover }, 'Mot de passe oublié ?'), installHint()));
   pw.focus();
 }
@@ -907,6 +920,15 @@ async function viewSettings(body) {
   const clipSel = h('select', {}, [[30, '30 secondes'], [60, '1 minute'], [120, '2 minutes'], [0, 'Jamais']].map(([v, l]) =>
     h('option', { value: v, selected: v === settings.clipboardClearSeconds }, l)));
   clipSel.addEventListener('change', guard(async () => { await api({ type: 'setSettings', settings: { clipboardClearSeconds: Number(clipSel.value) } }); toast('Réglage enregistré'); }));
+  const remSel = h('select', {}, [[1, '1 jour'], [7, '7 jours'], [15, '15 jours'], [30, '30 jours']].map(([v, l]) =>
+    h('option', { value: v, selected: v === settings.rememberDays }, l)));
+  remSel.addEventListener('change', guard(async () => { await api({ type: 'setSettings', settings: { rememberDays: Number(remSel.value) } }); toast('Réglage enregistré (appliqué au prochain déverrouillage)'); }));
+  const rem = await api({ type: 'rememberStatus' }).catch(() => ({ active: false }));
+  const remStatus = rem.active
+    ? h('div', {},
+      h('p', { class: 'sub' }, `Cet appareil reste connecté jusqu'au ${new Date(rem.expiresAt).toLocaleString('fr-FR', { dateStyle: 'long', timeStyle: 'short' })}. Le verrouillage automatique est suspendu.`),
+      h('button', { class: 'btn', onclick: guard(async () => { await api({ type: 'lock' }); viewUnlock(); }) }, icon('lock'), ' Oublier cet appareil et verrouiller'))
+    : h('p', { class: 'sub' }, 'Pour rester connecté, cochez « Rester connecté » en déverrouillant avec le mot de passe maître.');
   const cur = h('input', { class: 'input', type: 'password', placeholder: 'Mot de passe maître actuel', autocomplete: 'current-password' });
   const next = h('input', { class: 'input', type: 'password', placeholder: 'Nouveau mot de passe maître', autocomplete: 'new-password' });
   const next2 = h('input', { class: 'input', type: 'password', placeholder: 'Confirmer le nouveau mot de passe', autocomplete: 'new-password' });
@@ -914,6 +936,9 @@ async function viewSettings(body) {
   body.append(...[
     h('div', { class: 'field' }, h('label', {}, 'Verrouillage automatique après'), lockSel),
     h('div', { class: 'field' }, h('label', {}, 'Effacer le presse-papiers après la copie d\'un mot de passe'), clipSel),
+    h('h2', {}, 'Rester connecté'),
+    h('div', { class: 'field' }, h('label', {}, 'Durée de la session mémorisée'), remSel),
+    remStatus,
     h('h2', {}, 'Synchronisation'),
     await syncSection(),
     h('h2', {}, 'Dossiers'),

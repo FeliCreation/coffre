@@ -9,6 +9,7 @@ import { toCsv, parseBackup, backupFilename, csvFilename } from '../core/export.
 import { totpCode } from '../core/totp.js';
 import { auditEntries } from '../core/audit.js';
 import { checkPwned } from '../core/breach.js';
+import { defaultKeyStore, createRemember, openRemember, forgetRemember, REMEMBER_CHOICES, REMEMBER_DEFAULT_DAYS } from '../core/remember.js';
 
 const KEY_VAULT = 'vault';
 const KEY_SESSION = 'sessionKey';
@@ -19,7 +20,9 @@ const KEY_SYNC_LAST = 'syncLast';
 const KEY_JOIN = 'joinSync'; // dépôt + jeton saisis avant le déverrouillage (mémoire seulement)
 const SYNC_EVERY_MINUTES = 5;
 const ALARM_CLIP = 'clipclear';
-const DEFAULT_SETTINGS = { autoLockMinutes: 15, clipboardClearSeconds: 30 };
+const KEY_REMEMBER = 'remember'; // { wrapped, expiresAt } : clé du coffre chiffrée par la clé d'appareil (voir core/remember.js)
+const DEFAULT_SETTINGS = { autoLockMinutes: 15, clipboardClearSeconds: 30, rememberDays: REMEMBER_DEFAULT_DAYS };
+const deviceKeys = defaultKeyStore();
 
 // La clé de session reste invisible des content scripts (pages web).
 chrome.storage.session.setAccessLevel?.({ accessLevel: 'TRUSTED_CONTEXTS' });
@@ -32,7 +35,38 @@ async function settings() {
   return { ...DEFAULT_SETTINGS, ...s };
 }
 
+// ----- « Rester connecté » (appareil mémorisé) -----
+
+async function rememberRecord() {
+  return (await chrome.storage.local.get(KEY_REMEMBER))[KEY_REMEMBER] ?? null;
+}
+
+async function rememberActive() {
+  const r = await rememberRecord();
+  return !!r && r.expiresAt > Date.now();
+}
+
+/** Oublie l'appareil : supprime l'enregistrement ET la clé d'appareil (la copie chiffrée devient inutilisable). */
+async function forgetDevice() {
+  await chrome.storage.local.remove(KEY_REMEMBER);
+  await forgetRemember(deviceKeys);
+}
+
+/** Retrouve la clé du coffre après un redémarrage du navigateur (ou de l'extension), si la mémorisation est valide. */
+async function restoreFromRemember() {
+  const rec = await rememberRecord();
+  if (!rec) return null;
+  const key = await openRemember(deviceKeys, rec);
+  if (!key) {
+    await forgetDevice(); // expirée, clé d'appareil perdue ou données altérées : on redemande le mot de passe
+    return null;
+  }
+  await chrome.storage.session.set({ [KEY_SESSION]: key });
+  return key;
+}
+
 async function armAutoLock() {
+  if (await rememberActive()) return void (await chrome.alarms.clear(ALARM_LOCK)); // appareil mémorisé : pas de verrouillage par inactivité
   const { autoLockMinutes } = await settings();
   if (autoLockMinutes > 0) await chrome.alarms.create(ALARM_LOCK, { delayInMinutes: autoLockMinutes });
 }
@@ -73,16 +107,18 @@ async function clearClipboard() {
   } catch {}
 }
 
-async function lock() {
+/** Verrouille. Par défaut oublie aussi l'appareil mémorisé : « Verrouiller » doit réellement exiger le mot de passe maître. */
+async function lock({ forget = true } = {}) {
   cached = null;
   await chrome.storage.session.remove(KEY_SESSION);
+  if (forget) await forgetDevice();
   await clearPending();
   await chrome.alarms.clear(ALARM_LOCK);
   await chrome.alarms.clear(ALARM_SYNC);
 }
 
 chrome.alarms.onAlarm.addListener((a) => {
-  if (a.name === ALARM_LOCK) lock();
+  if (a.name === ALARM_LOCK) rememberActive().then((active) => (active ? null : lock({ forget: false })));
   if (a.name === ALARM_SYNC) syncSoon();
   if (a.name === ALARM_CLIP) clearClipboard();
 });
@@ -92,10 +128,18 @@ async function stored() {
 }
 
 async function unlockedVault() {
-  if (cached) return cached;
+  const rec = await rememberRecord();
+  if (rec && rec.expiresAt <= Date.now()) {
+    await lock(); // mémorisation expirée : retour à l'écran du mot de passe maître
+    throw new VaultError('LOCKED', 'Coffre verrouillé.');
+  }
+  const { [KEY_SESSION]: sessionKey } = await chrome.storage.session.get(KEY_SESSION);
+  if (cached && sessionKey) return cached;
+  cached = null;
   const st = await stored();
-  const { [KEY_SESSION]: key } = await chrome.storage.session.get(KEY_SESSION);
-  if (!st || !key) throw new VaultError('LOCKED', 'Coffre verrouillé.');
+  if (!st) throw new VaultError('LOCKED', 'Coffre verrouillé.');
+  const key = sessionKey ?? (await restoreFromRemember());
+  if (!key) throw new VaultError('LOCKED', 'Coffre verrouillé.');
   cached = await Vault.fromSessionKey(st, key);
   return cached;
 }
@@ -131,11 +175,24 @@ function syncSoon() {
   });
 }
 
-async function startSession(vault) {
+/** Ouvre la session. `rememberDays` > 0 : mémorise l'appareil (échéance fixe). Toute mémorisation précédente est remplacée. */
+async function startSession(vault, { rememberDays = 0 } = {}) {
   cached = vault;
-  await chrome.storage.session.set({ [KEY_SESSION]: await vault.sessionKey() });
+  const keyB64 = await vault.sessionKey();
+  await chrome.storage.session.set({ [KEY_SESSION]: keyB64 });
+  await forgetDevice();
+  let remembered = false;
+  if (rememberDays > 0) {
+    try {
+      await chrome.storage.local.set({ [KEY_REMEMBER]: await createRemember(deviceKeys, keyB64, rememberDays) });
+      remembered = true;
+    } catch {
+      await forgetDevice(); // IndexedDB indisponible (navigation privée…) : on ouvre quand même, sans mémoriser
+    }
+  }
   await armAutoLock();
   if (vault.sync) await chrome.alarms.create(ALARM_SYNC, { periodInMinutes: SYNC_EVERY_MINUTES });
+  return { remembered };
 }
 
 // ----- Actions exposées à l'interface (popup, options) -----
@@ -160,7 +217,7 @@ const actions = {
     await startSession(vault);
     return {};
   },
-  async unlock({ password }) {
+  async unlock({ password, remember = false }) {
     const st = await stored();
     if (!st) throw new VaultError('NO_VAULT', 'Aucun coffre.');
     const vault = await Vault.unlock(st, password);
@@ -169,18 +226,23 @@ const actions = {
       vault.setSync(joined); // appareil rejoint : on retient dépôt + jeton dans la partie chiffrée
       await chrome.storage.session.remove(KEY_JOIN);
     }
-    await startSession(vault);
+    const { remembered } = await startSession(vault, { rememberDays: remember ? (await settings()).rememberDays : 0 });
     if (vault.sync) {
       try {
         await runSync(vault); // met la liste à jour tout de suite ; un échec n'empêche pas d'ouvrir le coffre
       } catch {}
     }
     if (joined) await persist(vault, { sync: false });
-    return {};
+    return { remembered, wantedRemember: !!remember };
   },
   async lock() {
-    await lock();
+    await lock(); // oublie aussi l'appareil mémorisé
     return {};
+  },
+  /** Appareil mémorisé ? Jusqu'à quand ? (aucune donnée sensible) */
+  async rememberStatus() {
+    const r = await rememberRecord();
+    return { active: !!r && r.expiresAt > Date.now(), expiresAt: r?.expiresAt ?? null };
   },
   async list({ query = '' }) {
     return { entries: (await unlockedVault()).search(query) };
@@ -273,7 +335,11 @@ const actions = {
       if (!Number.isFinite(sec) || sec < 0 || (sec > 0 && sec < 30) || sec > 600) throw new VaultError('BAD_SETTING', 'Délai invalide (0, ou 30 à 600 secondes).');
       next.clipboardClearSeconds = Math.round(sec);
     }
-    await chrome.storage.local.set({ [KEY_SETTINGS]: { autoLockMinutes: next.autoLockMinutes, clipboardClearSeconds: next.clipboardClearSeconds } });
+    if (s?.rememberDays !== undefined) {
+      if (!REMEMBER_CHOICES.includes(Number(s.rememberDays))) throw new VaultError('BAD_SETTING', `Durée invalide (${REMEMBER_CHOICES.join(', ')} jours).`);
+      next.rememberDays = Number(s.rememberDays);
+    }
+    await chrome.storage.local.set({ [KEY_SETTINGS]: { autoLockMinutes: next.autoLockMinutes, clipboardClearSeconds: next.clipboardClearSeconds, rememberDays: next.rememberDays } });
     return {};
   },
   /** La popup vient de copier un secret : programme l'effacement du presse-papiers. */

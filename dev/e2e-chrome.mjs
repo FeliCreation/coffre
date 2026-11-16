@@ -229,6 +229,35 @@ try {
   const rec = await evalIn(pop, `chrome.runtime.sendMessage({ type: 'recover', code: ${JSON.stringify(kit.code)}, newPassword: 'autre mot de passe 99' })`);
   check(rec?.ok === true, 'mot de passe oublié : le kit rouvre le coffre');
 
+  // ---- 8 bis. « Rester connecté » : vraie clé d'appareil non extractable dans IndexedDB, survie à un « redémarrage » ----
+  const NEWPW = 'autre mot de passe 99';
+  await evalIn(pop, `chrome.runtime.sendMessage({ type: 'lock' })`);
+  const rem = await evalIn(pop, `chrome.runtime.sendMessage({ type: 'unlock', password: ${JSON.stringify(NEWPW)}, remember: true })`);
+  check(rem?.ok === true && rem.remembered === true, 'rester connecté : mémorisation créée (IndexedDB réel)', JSON.stringify(rem));
+  const stored = await evalIn(swSid, `chrome.storage.local.get('remember').then((o) => JSON.stringify(o.remember))`);
+  const sessKey = await evalIn(swSid, `chrome.storage.session.get('sessionKey').then((o) => o.sessionKey)`);
+  check(!!sessKey && !stored.includes(sessKey), 'rester connecté : la clé du coffre n\'est pas en clair dans le stockage local');
+  const devKey = await evalIn(swSid, `new Promise((res, rej) => { const r = indexedDB.open('coffre-device', 1); r.onsuccess = () => { const q = r.result.transaction('keys').objectStore('keys').get('device'); q.onsuccess = () => res({ extractable: q.result.extractable, algo: q.result.algorithm.name }); q.onerror = () => rej(q.error); }; r.onerror = () => rej(r.error); })`);
+  check(devKey.extractable === false && devKey.algo === 'AES-GCM', 'rester connecté : clé d\'appareil AES-GCM non extractable', JSON.stringify(devKey));
+  check((await evalIn(swSid, `chrome.alarms.getAll().then((a) => a.some((x) => x.name === 'autolock'))`)) === false, 'rester connecté : pas de verrouillage par inactivité');
+
+  await evalIn(pop, `chrome.storage.session.clear()`); // le navigateur « redémarre » : la mémoire de session disparaît
+  try { await cdp.send('ServiceWorker.stopAllWorkers'); } catch {} // et le service worker est arrêté (au mieux)
+  await sleep(1200);
+  const back = await evalIn(pop, `chrome.runtime.sendMessage({ type: 'state' })`);
+  check(back?.unlocked === true, 'rester connecté : coffre rouvert sans mot de passe après redémarrage', JSON.stringify(back));
+  const lst = await evalIn(pop, `chrome.runtime.sendMessage({ type: 'list', query: '' })`);
+  check(lst?.ok === true && lst.entries.length === 2, 'rester connecté : identifiants lisibles après redémarrage');
+
+  await evalIn(swSid, `chrome.storage.local.get('remember').then((o) => chrome.storage.local.set({ remember: { ...o.remember, expiresAt: Date.now() - 1000 } }))`);
+  await evalIn(pop, `chrome.storage.session.clear()`);
+  check((await evalIn(pop, `chrome.runtime.sendMessage({ type: 'state' })`))?.unlocked === false, 'rester connecté : verrouillé une fois l\'échéance dépassée');
+
+  await evalIn(pop, `chrome.runtime.sendMessage({ type: 'unlock', password: ${JSON.stringify(NEWPW)}, remember: true })`);
+  await evalIn(pop, `chrome.runtime.sendMessage({ type: 'lock' })`);
+  await evalIn(pop, `chrome.storage.session.clear()`);
+  check((await evalIn(pop, `chrome.runtime.sendMessage({ type: 'state' })`))?.unlocked === false, 'rester connecté : « Verrouiller » oublie l\'appareil');
+
   // ---- 9. Aucune erreur JavaScript ----
   check(errors.length === 0, 'aucune erreur JavaScript (service worker, popup, page)', errors.slice(0, 3).join(' | '));
 } catch (e) {
