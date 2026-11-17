@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Coffre",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Gestionnaire de mots de passe : coffre chiffré localement, générateur, remplissage automatique, partage sécurisé.",
   "minimum_chrome_version": "110",
   "permissions": ["storage", "alarms", "activeTab", "clipboardWrite", "offscreen"],

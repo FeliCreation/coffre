@@ -37,8 +37,30 @@
       const before = inputs.slice(0, inputs.indexOf(pass)).filter(isTextish);
       user = before[before.length - 1];
     }
-    if (!pass && !user) user = inputs.find((i) => isTextish(i) && /username|email/.test(ac(i)));
+    // Connexion en deux étapes : seul l'identifiant est visible. On prend le premier champ qui y ressemble.
+    if (!pass && !user) user = inputs.find((i) => isTextish(i) && (/username|email/.test(ac(i)) || (looksLikeIdentifier(i) && !isSignupScope(i))));
     return { user, pass };
+  }
+
+  const IDENT_WORDS = /e-?mail|courriel|user(name)?|login|identifiant|account|compte|phone|mobile|t[ée]l([ée]phone)?|pseudo|member|membre/i;
+  // Mots qui écartent un champ (recherche, adresse postale, carte…). « adresse e-mail » doit rester accepté : pas de « adresse » seul.
+  const OTHER_WORDS = /search|recherche|query|captcha|coupon|promo|postal|zip|city|ville|street|rue|first.?name|last.?name|pr[ée]nom|card|iban|otp|code/i;
+
+  /** Le champ ressemble-t-il à un identifiant de connexion (e-mail, nom d'utilisateur, téléphone) ? Sert aux connexions en deux étapes. */
+  function looksLikeIdentifier(el) {
+    if (el.type === 'search' || /^(searchbox|combobox)$/.test(el.getAttribute('role') || '')) return false;
+    const a = ac(el);
+    if (/username|email|tel/.test(a)) return true;
+    if (/new-password|one-time-code|cc-|address|postal|given-name|family-name/.test(a)) return false;
+    const hay = [el.name, el.id, el.placeholder, el.getAttribute('aria-label')].join(' ');
+    if (OTHER_WORDS.test(hay)) return false;
+    return el.type === 'email' || IDENT_WORDS.test(hay);
+  }
+
+  /** Page de création de compte ? (mot de passe « nouveau » ou confirmation de mot de passe) */
+  function isSignupScope(el) {
+    const pw = [...(el.form || document).querySelectorAll('input[type="password"]')].filter(visible);
+    return pw.length > 1 || pw.some((p) => ac(p) === 'new-password');
   }
 
   /** Le champ doit-il recevoir le badge ? (connexion existante, pas création de compte) */
@@ -47,7 +69,9 @@
     if (isPassword(el)) return ac(el) !== 'new-password';
     if (!isTextish(el)) return false;
     const f = loginFields(el);
-    return !!f.pass || /username/.test(ac(el));
+    if (f.pass) return ac(f.pass) !== 'new-password';
+    // Connexion en deux étapes (identifiant d'abord, mot de passe ensuite) : pas de champ mot de passe visible ici.
+    return looksLikeIdentifier(el) && !isSignupScope(el);
   }
 
   // ---------- Remplissage ----------
@@ -85,13 +109,13 @@
     .menu{position:fixed;display:none;background:#fff;color:#1a1a1a;border:1px solid #d4d4d8;border-radius:8px;
       padding:4px;font-size:13px;box-shadow:0 6px 20px rgba(0,0,0,.18)}
     .item{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;cursor:pointer}
-    .item:hover{background:#eef3ff}
+    .item:hover,.item.hl{background:#eef3ff}
     .av{width:24px;height:24px;border-radius:6px;background:#dbe7ff;color:#1d4ed8;font-size:11px;font-weight:600;
       display:flex;align-items:center;justify-content:center;flex:none}
     .t{font-weight:600}.s{font-size:12px;color:#5f5f66}
     .msg{padding:8px;color:#5f5f66;line-height:1.4}
     @media (prefers-color-scheme:dark){
-      .menu{background:#26262b;color:#f2f2f3;border-color:#44444c}.item:hover{background:#34343c}
+      .menu{background:#26262b;color:#f2f2f3;border-color:#44444c}.item:hover,.item.hl{background:#34343c}
       .badge,.av{background:#2f3f66;color:#bcd0ff}.badge:hover{background:#3a4d7d}.s,.msg{color:#a8a8b0}}
   `;
 
@@ -193,22 +217,71 @@
     const info = document.createElement('div');
     info.append(text('t', `Remplir avec ${entry.title}`), text('s', entry.username || '(sans identifiant)'));
     row.append(text('av', initials(entry.title)), info);
-    row.addEventListener('click', async (e) => {
-      if (!e.isTrusted) return; // jamais déclenché par le script d'une page
+    row.choose = async () => {
       const res = await send({ type: 'fill', id: entry.id });
       if (!res?.ok) return menu.replaceChildren(text('msg', res?.error || 'Remplissage impossible.'));
       const from = target;
       fill(loginFields(from), res);
       from?.focus();
       hide();
+    };
+    row.addEventListener('click', (e) => {
+      if (e.isTrusted) row.choose(); // jamais déclenché par le script d'une page
     });
     return row;
   }
 
+  // Propositions à l'arrivée dans un champ de connexion : la liste s'ouvre d'elle-même quand le coffre a un identifiant
+  // pour ce site. Rien n'est rempli sans un clic (ou Entrée) de l'utilisateur.
+  let autoRun = 0;
+  async function autoOpen() {
+    const run = ++autoRun;
+    const el = target;
+    if (!el || el.value) return; // déjà rempli ou saisie en cours : on ne dérange pas
+    const res = await send({ type: 'entries' });
+    if (run !== autoRun || target !== el || el.value || !res?.ok || res.locked || !res.entries.length) return;
+    menu.replaceChildren(...res.entries.map(renderItem));
+    menu.style.display = 'block';
+    highlight(0);
+    place();
+  }
+
+  const items = () => (menu ? [...menu.querySelectorAll('.item')] : []);
+  let hl = -1;
+  function highlight(i) {
+    const list = items();
+    hl = list.length ? (i + list.length) % list.length : -1;
+    list.forEach((r, k) => r.classList.toggle('hl', k === hl));
+  }
+
   document.addEventListener('focusin', (e) => {
     const el = e.target;
-    if (isCandidate(el)) show(el);
-    else hide();
+    if (isCandidate(el)) {
+      show(el);
+      autoOpen();
+    } else {
+      autoRun++;
+      hide();
+    }
+  }, true);
+  // Clavier : flèches pour choisir, Entrée pour remplir (seulement quand une proposition est surlignée), Échap pour fermer.
+  document.addEventListener('keydown', (e) => {
+    if (!e.isTrusted || !menu || menu.style.display !== 'block' || !target || hl < 0) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      highlight(hl + (e.key === 'ArrowDown' ? 1 : -1));
+    } else if (e.key === 'Enter' && items()[hl]?.choose) {
+      e.preventDefault();
+      e.stopPropagation();
+      items()[hl].choose();
+    }
+  }, true);
+  // Dès que l'utilisateur tape lui-même, la liste se retire.
+  document.addEventListener('input', (e) => {
+    if (e.isTrusted && e.target === target) {
+      autoRun++;
+      closeMenu();
+    }
   }, true);
   document.addEventListener('focusout', () => {
     setTimeout(() => {
@@ -225,7 +298,10 @@
   };
   addEventListener('scroll', reposition, { capture: true, passive: true });
   addEventListener('resize', reposition, { passive: true });
-  if (isCandidate(document.activeElement)) show(document.activeElement);
+  if (isCandidate(document.activeElement)) {
+    show(document.activeElement);
+    autoOpen();
+  }
 
   // ---------- Remplissage demandé depuis la popup ----------
 

@@ -28,7 +28,13 @@ const html = `<!doctype html><meta charset="utf-8"><title>Connexion</title>
 <input id="p" type="password" name="password" autocomplete="current-password"><br><button id="go" type="submit">Connexion</button></form>
 <script>window.__ev=[];for(const id of ['u','p'])for(const t of ['input','change'])document.getElementById(id).addEventListener(t,()=>__ev.push(id+':'+t));
 document.getElementById('f').addEventListener('submit',e=>e.preventDefault());</script>`;
-const web = createServer((_q, res) => res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(html));
+// Connexion en deux étapes, attributs relevés sur la vraie page amazon.fr (type=text, autocomplete=webauthn, mot de passe de largeur 0) + un champ de recherche.
+const html2 = `<!doctype html><meta charset="utf-8"><title>Étape 1</title>
+<input type="search" id="q" name="q" placeholder="Rechercher"><br>
+<form id="f"><input type="text" id="e" name="email" autocomplete="webauthn" aria-label="Saisissez un numéro de téléphone mobile ou votre adresse e-mail">
+<input type="password" name="password" style="position:absolute;width:0;height:0;opacity:0"><br><button id="go" type="submit">Continuer</button></form>
+<script>document.getElementById('f').addEventListener('submit',e=>e.preventDefault());</script>`;
+const web = createServer((q, res) => res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(q.url.startsWith('/deux-etapes') ? html2 : html));
 await new Promise((r) => web.listen(0, r));
 const SITE = `http://localhost:${web.address().port}/`;
 
@@ -174,14 +180,63 @@ try {
     return check(true, label);
   };
 
+  const badgeVisible = async (s) => {
+    const { root } = await cdp.send('DOM.getDocument', { depth: -1, pierce: true }, s);
+    const n = findNode(root, (x) => x.nodeName === 'BUTTON' && attr(x, 'aria-label') === 'Remplir avec Coffre');
+    return !!n && !/display:\s*none/.test(attr(n, 'style') ?? '');
+  };
+
   await evalIn(site, `document.getElementById('u').focus()`);
-  await sleep(500);
-  await clickNode((n) => n.nodeName === 'BUTTON' && attr(n, 'aria-label') === 'Remplir avec Coffre', 'page : badge Coffre visible, clic réel');
-  await clickNode((n) => attr(n, 'role') === 'menuitem', 'page : proposition de l\'identifiant, clic réel');
+  await sleep(1000); // le badge apparaît et la liste s'ouvre d'elle-même (un identifiant existe pour ce site)
+  check(await badgeVisible(site), 'page : badge Coffre visible dans le champ');
+  await clickNode((n) => attr(n, 'role') === 'menuitem', 'page : liste de propositions ouverte automatiquement, clic réel');
   await sleep(500);
   const filled = await evalIn(site, `({ u: document.getElementById('u').value, p: document.getElementById('p').value, ev: __ev })`);
   check(filled.u === 'cyril@test' && filled.p === 'Mdp-Test-123!', 'page : identifiant et mot de passe remplis', JSON.stringify(filled));
   check(['u:input', 'u:change', 'p:input', 'p:change'].every((e) => filled.ev.includes(e)), 'page : événements input/change émis');
+
+  // ---- 5 bis. Connexion en DEUX ÉTAPES (e-mail seul, sans attribut autocomplete) : badge, liste automatique, bouton de la popup ----
+  const { targetId: step1Id } = await cdp.send('Target.createTarget', { url: `${SITE}deux-etapes` });
+  const step1 = await attach(step1Id);
+  await cdp.send('Target.activateTarget', { targetId: step1Id });
+  await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true }, step1);
+  await cdp.send('DOM.enable', {}, step1);
+  await sleep(1200);
+  await evalIn(step1, `document.getElementById('q').focus()`);
+  await sleep(600);
+  check(!(await badgeVisible(step1)), 'deux étapes : pas de badge sur un champ de recherche');
+  await evalIn(step1, `document.getElementById('e').focus()`);
+  await sleep(1000);
+  check(await badgeVisible(step1), 'deux étapes : badge sur le champ e-mail seul');
+  const siteBackup = site;
+  const clickIn = async (s, pred, label) => {
+    let node;
+    for (let i = 0; i < 20 && !node; i++) {
+      const { root } = await cdp.send('DOM.getDocument', { depth: -1, pierce: true }, s);
+      node = findNode(root, pred);
+      if (!node) await sleep(300);
+    }
+    if (!node) return check(false, label, 'élément introuvable');
+    const { model } = await cdp.send('DOM.getBoxModel', { nodeId: node.nodeId }, s);
+    const [x, y] = [(model.content[0] + model.content[4]) / 2, (model.content[1] + model.content[5]) / 2];
+    for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) await cdp.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 }, s);
+    return check(true, label);
+  };
+  await clickIn(step1, (n) => attr(n, 'role') === 'menuitem', 'deux étapes : liste automatique, clic réel');
+  await sleep(500);
+  check((await evalIn(step1, `document.getElementById('e').value`)) === 'cyril@test', 'deux étapes : identifiant rempli depuis le champ');
+
+  // Bouton « Remplir » de la popup (message coffre:fill vers l'onglet), sans champ actif
+  await evalIn(step1, `(() => { const e = document.getElementById('e'); e.value = ''; e.blur(); document.body.focus(); })()`);
+  const popFill = await evalIn(pop, `(async () => {
+    const tabs = await chrome.tabs.query({});
+    const out = [];
+    for (const t of tabs) { try { out.push(await chrome.tabs.sendMessage(t.id, { type: 'coffre:fill', username: 'cyril@test', password: 'x' })); } catch {} }
+    return out.filter((r) => r?.filled).length;
+  })()`);
+  check(popFill >= 1 && (await evalIn(step1, `document.getElementById('e').value`)) === 'cyril@test', 'deux étapes : le bouton « Remplir » de la popup trouve le champ', String(popFill));
+  await cdp.send('Target.closeTarget', { targetId: step1Id });
+  void siteBackup;
 
   // ---- 6. Une page ne peut pas parler au service worker comme la popup ----
   const probe = await evalIn(site, `new Promise((r) => { try { chrome.runtime.sendMessage('${EXT}', { type: 'list', query: '' }, (res) => r(res ?? String(chrome.runtime.lastError?.message))); } catch (e) { r('erreur: ' + e.message); } })`);
